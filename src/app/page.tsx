@@ -1711,23 +1711,6 @@ function ModuloProcesoNuevos({sesion,onModuleChange}:{sesion:Sesion;onModuleChan
     };
   }, [cargar, syncAutomatico]);
 
-  ...
-}
-  const cargar=useCallback(async(pag:number)=>{
-    setCargando(true);setError('');
-    try{
-      const params=new URLSearchParams({filtro,page:String(pag),limit:String(LIMIT)});
-      if(filtro==='rango'&&desde)params.set('desde',desde);
-      if(filtro==='rango'&&hasta)params.set('hasta',hasta);
-      const res=await fetch(`/api/procesos/nuevos?${params}`);
-      const data=await res.json();
-      if(!res.ok||!data.ok){setError(data.error??'Error al cargar.');return;}
-      setProcesos(data.procesos??[]);setTotal(data.total??0);setTotalPages(data.totalPages??1);setPagina(data.page??pag);
-    }catch{setError('No se pudo conectar.');}finally{setCargando(false);}
-  },[filtro,desde,hasta]);
-
-  useEffect(()=>{cargar(1);},[cargar]);
-
   const handleGestionar=async(p:ProcesoNuevoItem)=>{
     setGestionando(true);setErrorGestion('');
     try{
