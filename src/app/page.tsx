@@ -2230,7 +2230,14 @@ function ModuloProcesoNuevos({sesion,onModuleChange}:{sesion:Sesion;onModuleChan
     syncEnCursoRef.current = true;
 
     try {
-      const res = await fetch('/api/procesos/sync', { method: 'POST' });
+      const res = await fetch('/api/procesos/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          silencioso: true,
+        }),
+      });
+
       const data = await res.json().catch(() => null);
 
       if (!res.ok || (data && data.ok === false)) {
@@ -2480,9 +2487,16 @@ function ModuloProcesoNuevos({sesion,onModuleChange}:{sesion:Sesion;onModuleChan
     </div>
   </>);
 }
-
-function Placeholder({nombre}:{nombre:string}){return<div className="content"><div style={{background:'white',border:'1px solid #e5e7eb',borderRadius:8,padding:22}}><h2 style={{margin:'0 0 8px',fontSize:18,color:'#1f2937'}}>{nombre}</h2><p style={{margin:0,color:'#6b7280',fontSize:13}}>Módulo en construcción.</p></div></div>;}
-
+function Placeholder({nombre}:{nombre:string}){
+  return (
+    <div className="content">
+      <div style={{background:'white',border:'1px solid #e5e7eb',borderRadius:8,padding:22}}>
+        <h2 style={{margin:'0 0 8px',fontSize:18,color:'#1f2937'}}>{nombre}</h2>
+        <p style={{margin:0,color:'#6b7280',fontSize:13}}>Módulo en construcción.</p>
+      </div>
+    </div>
+  );
+}
 /* ══════════════════════════════════════════════════════════════
    ROOT
 ══════════════════════════════════════════════════════════════ */
