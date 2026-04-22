@@ -153,13 +153,40 @@ function PantallaLogin({onLogin}:{onLogin:(s:Sesion)=>void}) {
   return(<div className="login-page"><div className="login-deco login-deco-tl"/><div className="login-deco login-deco-br"/><div className="login-card"><div className="login-brand">{/* eslint-disable-next-line @next/next/no-img-element */}<img src="https://www.grupocolba.com.co/wp-content/uploads/2021/05/grupocolba-logo.png" alt="Grupo Colba" className="login-logo"/></div>{error&&<div className="login-error">{error}</div>}<form className="login-form" onSubmit={handleSubmit} noValidate><div className="login-field"><label className="login-label">Correo electrónico</label><input className="login-input" type="email" placeholder="comercial@grupocolba.com" value={email} onChange={e=>setEmail(e.target.value)} autoComplete="email" disabled={loading}/></div><div className="login-field"><label className="login-label">Contraseña</label><div className="login-pass-wrap"><input className="login-input login-input-pass" type={showPass?'text':'password'} placeholder="••••••••" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="current-password" disabled={loading}/><button type="button" className="login-eye" onClick={()=>setShowPass(v=>!v)} tabIndex={-1}>{showPass?<IcoEyeOff/>:<IcoEyeOn/>}</button></div></div><button type="submit" className="login-btn" disabled={loading}>{loading?'Verificando…':'Ingresar'}</button></form><p className="login-footer">COPYRIGHT © 2026 <strong>Grupo Colba</strong></p></div></div>);
 }
 
+/* ── Badge conteo procesos nuevos de hoy ── */
+function BadgeNuevosHoy(){
+  const[count,setCount]=React.useState<number|null>(null);
+  React.useEffect(()=>{
+    fetch('/api/procesos/nuevos?filtro=hoy&limit=1')
+      .then(r=>r.json())
+      .then(d=>{if(d.ok&&typeof d.total==='number')setCount(d.total);})
+      .catch(()=>{/* silencioso si la tabla no existe aún */});
+  },[]);
+  if(!count)return null;
+  return(
+    <span style={{
+      display:'inline-flex',alignItems:'center',justifyContent:'center',
+      minWidth:17,height:17,borderRadius:9,
+      background:'#ef4444',color:'white',
+      fontSize:10,fontWeight:700,lineHeight:1,
+      padding:'0 4px',marginLeft:6,flexShrink:0,
+      verticalAlign:'middle',
+    }}>
+      {count>99?'99+':count}
+    </span>
+  );
+}
+
 /* ══════════════════════════════════════════════════════════════
    SIDEBAR
 ══════════════════════════════════════════════════════════════ */
 interface SidebarProps{collapsed:boolean;onToggle:()=>void;activeModule:string;onModuleChange:(m:string)=>void;openAccordion:string|null;onAccordionToggle:(k:string)=>void;sesion:Sesion;onLogout:()=>void;}
 function Sidebar({collapsed,onToggle,activeModule,onModuleChange,openAccordion,onAccordionToggle,sesion,onLogout}:SidebarProps){
   const ni=(mod:string)=>['nav-item',activeModule===mod?'active':'',openAccordion===mod?'open':''].filter(Boolean).join(' ');
-  return(<aside className={`sidebar${collapsed?' collapsed':''}`}><div className="sidebar-logo" style={{flexShrink:0}}><div className="logo-box"><div className="logo-qs">{/* eslint-disable-next-line @next/next/no-img-element */}<img src="https://www.grupocolba.com.co/wp-content/uploads/2021/05/grupocolba-logo.png" alt="Grupo Colba"/></div><div className="logo-version"><strong>LICYCOLBA</strong></div></div><button className="toggle-btn" onClick={onToggle}><IcoChevL/></button></div><div className="sidebar-scroll"><div className="sidebar-user"><IcoUser/><div className="sidebar-user-info"><div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontWeight:500}}>{sesion.usuario}</div><div style={{fontSize:10.5,color:'var(--sidebar-text-dim)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginTop:1}}>{sesion.cargo}</div></div></div><nav className="sidebar-nav"><div className="nav-item" onClick={onLogout}><IcoLogout/><span className="nav-item-text">Cerrar sesión</span></div><div className={ni('dashboard')} onClick={()=>onModuleChange('dashboard')}><IcoDashboard/><span className="nav-item-text">Dashboard</span></div><div className={ni('trm')} onClick={()=>onModuleChange('trm')}><IcoTRM/><span className="nav-item-text">TRM</span></div><div className="section-title">MÓDULOS</div><div className={ni('busquedaFinal')} onClick={()=>onModuleChange('busquedaFinal')}><IcoBusqueda/><span className="nav-item-text">Búsqueda de procesos</span></div><div className={ni('solicitudes')} onClick={()=>onAccordionToggle('solicitudes')}><IcoSolicitudes/><span className="nav-item-text">Solicitudes</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className={`sub-item${activeModule==='solicitudesAbiertas'?' active':''}`} onClick={()=>onModuleChange('solicitudesAbiertas')}>Solicitudes abiertas</div><div className={`sub-item${activeModule==='solicitudesRechazadas'?' active':''}`} onClick={()=>onModuleChange('solicitudesRechazadas')}>Solicitudes rechazadas</div><div className={`sub-item${activeModule==='solicitudesEliminadas'?' active':''}`} onClick={()=>onModuleChange('solicitudesEliminadas')}>Solicitudes eliminadas</div><div className={`sub-item${activeModule==='solicitudesTodas'?' active':''}`} onClick={()=>onModuleChange('solicitudesTodas')}>Todas las solicitudes</div></div><div className={ni('asignaciones')} onClick={()=>onAccordionToggle('asignaciones')}><IcoAsignaciones/><span className="nav-item-text">Asignaciones</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className="sub-item" onClick={()=>onModuleChange('asignacionesPendientes')}>Asignaciones pendientes</div><div className="sub-item" onClick={()=>onModuleChange('asignacionesTerminadas')}>Asignaciones terminadas</div></div><div className={ni('cronogramas')} onClick={()=>onAccordionToggle('cronogramas')}><IcoCronogramas/><span className="nav-item-text" style={{opacity:0.5}}>Cronogramas</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className="sub-item">Todos los cronogramas</div></div><div className={ni('maestroDeDocumentos')} onClick={()=>onModuleChange('maestroDeDocumentos')}><IcoMaestro/><span className="nav-item-text">Maestro de documentos</span></div><div className={ni('estructuraDeCostos')} onClick={()=>onModuleChange('estructuraDeCostos')}><IcoEstructura/><span className="nav-item-text">Estructura de costos</span></div><div className={ni('examenesMedicos')} onClick={()=>onModuleChange('examenesMedicos')}><IcoExamenes/><span className="nav-item-text">Exámenes médicos</span></div><div className={ni('usuarios')} onClick={()=>onAccordionToggle('usuarios')}><IcoUsuarios/><span className="nav-item-text">Usuarios y perfiles</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className={`sub-item${activeModule==='usuarios'?' active':''}`} onClick={()=>onModuleChange('usuarios')}>Usuarios</div><div className={`sub-item${activeModule==='perfiles'?' active':''}`} onClick={()=>onModuleChange('perfiles')}>Perfiles</div><div className={`sub-item${activeModule==='usuariosEliminados'?' active':''}`} onClick={()=>onModuleChange('usuariosEliminados')}>Usuarios eliminados</div></div><div className={ni('indicadores')} onClick={()=>onAccordionToggle('indicadores')}><IcoIndicadores/><span className="nav-item-text" style={{opacity:0.5}}>Indicadores</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className="sub-item">Panel de indicadores</div></div><div className="section-title">CUENTA</div><div className="nav-item"><IcoConfig/><span className="nav-item-text">Configuración de cuenta</span></div><div className="section-title">LICYCOLBA</div></nav></div></aside>);
+  const solAbiertasModules=['solicitudesComercial','solicitudesEspecializada'];
+  const [subOpen,setSubOpen]=React.useState<string|null>(solAbiertasModules.includes(activeModule)?'solicitudesAbiertas':null);
+  const toggleSub=(k:string)=>setSubOpen(prev=>prev===k?null:k);
+  return(<aside className={`sidebar${collapsed?' collapsed':''}`}><div className="sidebar-logo" style={{flexShrink:0}}><div className="logo-box"><div className="logo-qs">{/* eslint-disable-next-line @next/next/no-img-element */}<img src="https://www.grupocolba.com.co/wp-content/uploads/2021/05/grupocolba-logo.png" alt="Grupo Colba"/></div><div className="logo-version"><strong>LICYCOLBA</strong></div></div><button className="toggle-btn" onClick={onToggle}><IcoChevL/></button></div><div className="sidebar-scroll"><div className="sidebar-user"><IcoUser/><div className="sidebar-user-info"><div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontWeight:500}}>{sesion.usuario.replace(/(?:^|[.\s_-])(\w)/g,(m,c)=>m.replace(c,c.toUpperCase()))}</div><div style={{fontSize:10.5,color:'var(--sidebar-text-dim)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginTop:1}}>{sesion.cargo}</div></div></div><nav className="sidebar-nav"><div className="nav-item" onClick={onLogout}><IcoLogout/><span className="nav-item-text">Cerrar sesión</span></div><div className={ni('dashboard')} onClick={()=>onModuleChange('dashboard')}><IcoDashboard/><span className="nav-item-text">Dashboard</span></div><div className={ni('trm')} onClick={()=>onModuleChange('trm')}><IcoTRM/><span className="nav-item-text">TRM</span></div><div className="section-title">MÓDULOS</div><div className={ni('busqueda')} onClick={()=>onAccordionToggle('busqueda')}><IcoBusqueda/><span className="nav-item-text">Búsqueda de procesos</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className={`sub-item${activeModule==='procesosNuevos'?' active':''}`} onClick={()=>onModuleChange('procesosNuevos')}>Procesos nuevos<BadgeNuevosHoy/></div><div className={`sub-item${activeModule==='busquedaFinal'?' active':''}`} onClick={()=>onModuleChange('busquedaFinal')}>Todos los procesos</div></div><div className={ni('solicitudes')} onClick={()=>onAccordionToggle('solicitudes')}><IcoSolicitudes/><span className="nav-item-text">Solicitudes</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className={`sub-item${['solicitudesComercial','solicitudesEspecializada'].includes(activeModule)?' active':''}`} onClick={()=>toggleSub('solicitudesAbiertas')} style={{display:'flex',alignItems:'center',cursor:'pointer',width:'100%'}}>Solicitudes abiertas<span style={{marginLeft:'auto',display:'inline-flex',alignItems:'center',transform:subOpen==='solicitudesAbiertas'?'rotate(90deg)':'none',transition:'transform .2s',width:16,height:16,opacity:.7}}><IcoChevR/></span></div>{subOpen==='solicitudesAbiertas'&&<div style={{paddingLeft:12}}><div className={`sub-item${activeModule==='solicitudesComercial'?' active':''}`} onClick={()=>onModuleChange('solicitudesComercial')}>Comercial</div><div className={`sub-item${activeModule==='solicitudesEspecializada'?' active':''}`} onClick={()=>onModuleChange('solicitudesEspecializada')}>Especializados</div></div>}<div className={`sub-item${activeModule==='solicitudesRechazadas'?' active':''}`} onClick={()=>onModuleChange('solicitudesRechazadas')}>Solicitudes rechazadas</div><div className={`sub-item${activeModule==='solicitudesEliminadas'?' active':''}`} onClick={()=>onModuleChange('solicitudesEliminadas')}>Solicitudes eliminadas</div><div className={`sub-item${activeModule==='solicitudesTodas'?' active':''}`} onClick={()=>onModuleChange('solicitudesTodas')}>Todas las solicitudes</div></div><div className={ni('asignaciones')} onClick={()=>onAccordionToggle('asignaciones')}><IcoAsignaciones/><span className="nav-item-text">Asignaciones</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className="sub-item" onClick={()=>onModuleChange('asignacionesPendientes')}>Asignaciones pendientes</div><div className="sub-item" onClick={()=>onModuleChange('asignacionesTerminadas')}>Asignaciones terminadas</div></div><div className={ni('cronogramas')} onClick={()=>onAccordionToggle('cronogramas')}><IcoCronogramas/><span className="nav-item-text" style={{opacity:0.5}}>Cronogramas</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className="sub-item">Todos los cronogramas</div></div><div className={ni('maestroDeDocumentos')} onClick={()=>onModuleChange('maestroDeDocumentos')}><IcoMaestro/><span className="nav-item-text">Maestro de documentos</span></div><div className={ni('estructuraDeCostos')} onClick={()=>onModuleChange('estructuraDeCostos')}><IcoEstructura/><span className="nav-item-text">Estructura de costos</span></div><div className={ni('examenesMedicos')} onClick={()=>onModuleChange('examenesMedicos')}><IcoExamenes/><span className="nav-item-text">Exámenes médicos</span></div><div className={ni('usuarios')} onClick={()=>onAccordionToggle('usuarios')}><IcoUsuarios/><span className="nav-item-text">Usuarios y perfiles</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className={`sub-item${activeModule==='usuarios'?' active':''}`} onClick={()=>onModuleChange('usuarios')}>Usuarios</div><div className={`sub-item${activeModule==='perfiles'?' active':''}`} onClick={()=>onModuleChange('perfiles')}>Perfiles</div><div className={`sub-item${activeModule==='usuariosEliminados'?' active':''}`} onClick={()=>onModuleChange('usuariosEliminados')}>Usuarios eliminados</div></div><div className={ni('indicadores')} onClick={()=>onAccordionToggle('indicadores')}><IcoIndicadores/><span className="nav-item-text" style={{opacity:0.5}}>Indicadores</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className="sub-item">Panel de indicadores</div></div><div className="section-title">CUENTA</div><div className="nav-item"><IcoConfig/><span className="nav-item-text">Configuración de cuenta</span></div><div className="section-title">LICYCOLBA</div></nav></div></aside>);
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -382,7 +409,7 @@ function ModalDetallesProceso({sol,onClose}:{sol:Solicitud;onClose:()=>void}){
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:15,fontWeight:600,color:'#0f172a',marginBottom:6,lineHeight:1.3}}>{sol.entidad||'Detalle del proceso'}</div>
               <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
-                {sol.codigoProceso&&<span style={{fontSize:11,color:'#64748b',background:'#f1f5f9',padding:'2px 8px',borderRadius:4,fontFamily:'monospace'}}>{sol.codigoProceso}</span>}
+                {sol.codigoProceso&&<span style={{fontSize:11,color:'#64748b',background:'#f1f5f9',padding:'2px 8px',borderRadius:4}}>{sol.codigoProceso}</span>}
                 {sol.estadoFuente&&<span style={{display:'inline-flex',alignItems:'center',gap:5,fontSize:11,fontWeight:600,color:eb.color,background:eb.bg,padding:'3px 10px',borderRadius:20}}><span style={{width:5,height:5,borderRadius:'50%',background:eb.dot,flexShrink:0}}/>{sol.estadoFuente}</span>}
                 {pc&&<span style={{fontSize:11,color:pc.color,background:pc.bg,padding:'3px 10px',borderRadius:20,fontWeight:600}}>{pc.label}</span>}
                 <span style={{fontSize:10,color:'#94a3b8',background:'#f8fafc',padding:'2px 8px',borderRadius:4,border:'1px solid #e2e8f0'}}>Solo lectura</span>
@@ -431,16 +458,16 @@ function ModalDetallesProceso({sol,onClose}:{sol:Solicitud;onClose:()=>void}){
             </div>
           </div>
 
-          {/* Cronograma */}
+          {/* Cronograma / fechas */}
           <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:'12px 16px'}}>
             <div style={sT}>Cronograma de fechas</div>
-            {fmtFecha(sol.fechaPublicacion)&&(
+            {sol.fechaPublicacion&&(
               <div style={rB}>
                 <span style={{color:'#64748b',flex:1,paddingRight:16}}>Fecha de publicación</span>
                 <span style={{color:'#1e293b',whiteSpace:'nowrap'}}>{fmtFecha(sol.fechaPublicacion)}</span>
               </div>
             )}
-            {fmtFecha(sol.fechaVencimiento)&&(
+            {sol.fechaVencimiento&&(
               <div style={{...rB,borderBottom:procDataEntries.length>0?'1px solid #f8fafc':'none'}}>
                 <span style={{color:'#64748b',flex:1,paddingRight:16}}>Fecha de vencimiento</span>
                 <span style={{color:'#dc2626',fontWeight:600,whiteSpace:'nowrap'}}>{fmtFecha(sol.fechaVencimiento)}</span>
@@ -457,12 +484,12 @@ function ModalDetallesProceso({sol,onClose}:{sol:Solicitud;onClose:()=>void}){
                 </div>
               );
             })}
-            {!fmtFecha(sol.fechaPublicacion)&&!fmtFecha(sol.fechaVencimiento)&&procDataEntries.length===0&&(
+            {!sol.fechaPublicacion&&!sol.fechaVencimiento&&procDataEntries.length===0&&(
               <p style={{fontSize:12,color:'#94a3b8',margin:0}}>Sin fechas registradas.</p>
             )}
           </div>
 
-          {/* Fuentes */}
+          {/* Fuentes / Links */}
           {fuentes.length>0&&(
             <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:'12px 16px'}}>
               <div style={sT}>Fuentes y enlaces</div>
@@ -544,8 +571,7 @@ function ModalDetallesProceso({sol,onClose}:{sol:Solicitud;onClose:()=>void}){
             {(sol.linkSecop||sol.linkDetalle)&&(
               <a href={sol.linkSecop||sol.linkDetalle} target="_blank" rel="noopener noreferrer"
                 style={{display:'inline-flex',alignItems:'center',gap:6,height:34,padding:'0 14px',borderRadius:8,border:'1px solid #D0E4F3',background:'white',color:'#1E5799',fontSize:12,fontWeight:500,textDecoration:'none'}}>
-                <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:13,height:13}}><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                Abrir en portal
+                <IcoExternalLink/>Abrir en portal
               </a>
             )}
             <button onClick={onClose} style={{height:34,padding:'0 18px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#374151',fontSize:12,fontFamily:'var(--font)',cursor:'pointer'}}>
@@ -557,12 +583,10 @@ function ModalDetallesProceso({sol,onClose}:{sol:Solicitud;onClose:()=>void}){
     </div>
   );
 }
+
 /* ══════════════════════════════════════════════════════════════
    MODAL PROCESO — Control de solicitud (edición de estado)
    ModalDetallesProceso se abre desde aquí con el botón.
-══════════════════════════════════════════════════════════════ */
-/* ══════════════════════════════════════════════════════════════
-   MODAL PROCESO — Control de solicitud
 ══════════════════════════════════════════════════════════════ */
 function ModalProceso({sol,onClose,onGuardado}:{sol:Solicitud;onClose:()=>void;onGuardado:(updated:Solicitud)=>void}){
   const [nuevoEstado,setNuevoEstado]=useState<string>(sol.estadoSolicitud||'En revisión');
@@ -576,6 +600,7 @@ function ModalProceso({sol,onClose,onGuardado}:{sol:Solicitud;onClose:()=>void;o
   const pc=sol.perfil?perfilColor(sol.perfil):null;
   const ebc=estadoSolicitudColor(sol.estadoSolicitud||'');
   const portalInfo=portalColor(sol.aliasFuente||'',sol.fuente||'');
+
   const sqrLabel=sol.sqrError?'Error SQR':sol.sqrNumero?sol.sqrNumero:'Sin SQR';
   const sqrBg=sol.sqrError?'#fef2f2':sol.sqrNumero?'#E8F5E9':'#f1f5f9';
   const sqrColor=sol.sqrError?'#dc2626':sol.sqrNumero?'#15803d':'#64748b';
@@ -588,8 +613,9 @@ function ModalProceso({sol,onClose,onGuardado}:{sol:Solicitud;onClose:()=>void;o
       const data=await res.json();
       if(!res.ok||!data.ok){setError(data.error??'Error al guardar.');return;}
       setGuardadoOk(true);
-      onGuardado({...sol,...data.solicitud,estadoSolicitud:nuevoEstado});
-      setTimeout(()=>onClose(),700);
+      const updated:Solicitud={...sol,...data.solicitud,estadoSolicitud:nuevoEstado};
+      onGuardado(updated);
+      setTimeout(()=>onClose(),800);
     }catch{setError('No se pudo conectar.');}
     finally{setGuardando(false);}
   };
@@ -664,7 +690,7 @@ function ModalProceso({sol,onClose,onGuardado}:{sol:Solicitud;onClose:()=>void;o
           {/* CUERPO */}
           <div style={{flex:1,overflowY:'auto',padding:'18px 22px',display:'flex',flexDirection:'column',gap:16}}>
 
-            {/* Resumen read-only */}
+            {/* Resumen read-only del proceso */}
             <div style={{background:'#FAFCFF',border:'1px solid #D0E4F3',borderRadius:10,padding:'14px 16px'}}>
               <div style={{fontSize:10,fontWeight:700,color:'#1E5799',textTransform:'uppercase' as const,letterSpacing:'0.08em',marginBottom:12,paddingBottom:8,borderBottom:'2px solid #EAF2FB'}}>
                 Resumen del proceso
@@ -678,22 +704,22 @@ function ModalProceso({sol,onClose,onGuardado}:{sol:Solicitud;onClose:()=>void;o
                 {filaInfo('Fecha registro',fmtFechaHora(sol.createdAt))}
               </div>
 
-              {/* Botón Ver detalles del proceso */}
+              {/* Botón Ver datos del proceso */}
               <div style={{marginTop:14,paddingTop:12,borderTop:'1px solid #D0E4F3'}}>
                 <button
                   onClick={()=>setVerDetalle(true)}
                   style={{display:'inline-flex',alignItems:'center',gap:8,height:36,padding:'0 18px',borderRadius:8,border:'1.5px solid #1E5799',background:'white',color:'#1E5799',fontSize:12.5,fontWeight:600,fontFamily:'var(--font)',cursor:'pointer',transition:'all .15s'}}
-                  onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#EAF2FB';}}
-                  onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';}}>
+                  onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#EAF2FB';(e.currentTarget as HTMLButtonElement).style.borderColor='#1a5ea8';}}
+                  onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';(e.currentTarget as HTMLButtonElement).style.borderColor='#1E5799';}}>
                   <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}>
                     <path d="M9 12h6m-6 4h6M5 20h14a2 2 0 002-2V8.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0014.586 2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/>
                   </svg>
-                  Ver detalles del proceso
+                  Ver datos del proceso
                 </button>
               </div>
             </div>
 
-            {/* Control — único campo editable */}
+            {/* Control de solicitud — única sección editable */}
             <div style={{background:'#FAFCFF',border:'1px solid #D0E4F3',borderRadius:10,padding:'14px 16px'}}>
               <div style={{fontSize:10,fontWeight:700,color:'#1E5799',textTransform:'uppercase' as const,letterSpacing:'0.08em',marginBottom:12,paddingBottom:8,borderBottom:'2px solid #EAF2FB'}}>
                 Control de solicitud
@@ -702,7 +728,9 @@ function ModalProceso({sol,onClose,onGuardado}:{sol:Solicitud;onClose:()=>void;o
                 Solo puedes cambiar el estado a <strong>Rechazada</strong> o volver a <strong>En revisión</strong>.
               </div>
               <label style={{fontSize:11,fontWeight:700,color:'#374151',display:'block',marginBottom:6}}>Estado de la solicitud</label>
-              <select value={nuevoEstado} onChange={e=>setNuevoEstado(e.target.value)}
+              <select
+                value={nuevoEstado}
+                onChange={e=>setNuevoEstado(e.target.value)}
                 style={{width:'100%',height:38,border:'2px solid #1a5ea8',borderRadius:8,padding:'0 12px',fontSize:13,fontFamily:'var(--font)',color:'#1e293b',background:'white',outline:'none',cursor:'pointer',fontWeight:600}}>
                 <option value="En revisión">En revisión</option>
                 <option value="Rechazada">Rechazada</option>
@@ -733,21 +761,413 @@ function ModalProceso({sol,onClose,onGuardado}:{sol:Solicitud;onClose:()=>void;o
     </>
   );
 }
+
 /* ══════════════════════════════════════════════════════════════
    MÓDULO SOLICITUDES ABIERTAS
 ══════════════════════════════════════════════════════════════ */
-function ModuloSolicitudesAbiertas({sesion}:{sesion:Sesion}){
+/* ══════════════════════════════════════════════════════════════
+   MODAL EDITAR SOLICITUD
+══════════════════════════════════════════════════════════════ */
+function ModalEditarSolicitud({sol,sesion,onClose,onGuardado}:{sol:Solicitud;sesion:Sesion;onClose:()=>void;onGuardado:(updated:Solicitud)=>void}){
+  const fmtFechaInput=(r:string|null)=>{if(!r)return'';try{return new Date(r).toISOString().slice(0,10);}catch{return'';}};
+  const fmtFechaDisplay=(r:string)=>{try{return new Date(r).toLocaleString('es-CO',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).replace(',','');}catch{return r;}};
+
+  // Detectar tipo de proceso desde sede o fuente
+  const tipoInicial=(()=>{
+    if(sol.sede==='Público'||sol.sede==='Privado')return sol.sede;
+    if((sol.fuente||'').toLowerCase().includes('secop'))return'Público';
+    return '';
+  })();
+  // Detectar modalidad: si modalidad contiene " — " viene de flujo antiguo, separar
+  const modalidadParts=sol.modalidad?.includes(' — ')?(sol.modalidad.split(' — ')):[null,sol.modalidad||''];
+  const subtipoInicial=modalidadParts[1]||'';
+
+  const [form,setForm]=useState({
+    fechaCreacion:fmtFechaDisplay(sol.createdAt),
+    nombrePersonal:sol.usuarioRegistro||sesion.usuario,
+    tipoProceso:tipoInicial,
+    subtipoProceso:subtipoInicial,
+    entidadGrupo:sol.perfil||'',
+    ciudad:sol.ciudad||'',
+    entidad:sol.entidad||'',
+    codigoProceso:sol.codigoProceso||'',
+    objeto:sol.objeto||'',
+    valor:sol.valor?String(sol.valor):'',
+    plataforma:sol.plataforma||'',
+    fechaCierre:fmtFechaInput(sol.fechaCierre),
+  });
+  const [guardando,setGuardando]=useState(false);
+  const [error,setError]=useState('');
+
+  const set=(f:string,v:string)=>setForm(p=>{const next={...p,[f]:v};try{localStorage.setItem(DRAFT_KEY,JSON.stringify(next));setTieneBorrador(true);}catch{/**/}return next;});
+  const subtipos=SUBTIPOS[form.tipoProceso]||[];
+
+  const handleGuardar=async()=>{
+    setError('');
+    if(!form.tipoProceso||!form.entidadGrupo||!form.ciudad||!form.entidad||!form.codigoProceso||!form.objeto){
+      setError('Los campos marcados con * son obligatorios.');return;
+    }
+    setGuardando(true);
+    try{
+      const res=await fetch('/api/solicitudes',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        id:              sol.id,
+        codigoProceso:   form.codigoProceso,
+        nombreProceso:   form.objeto,
+        entidad:         form.entidad,
+        objeto:          form.objeto,
+        modalidad:       form.subtipoProceso||form.tipoProceso,
+        sede:            form.tipoProceso,
+        perfil:          form.entidadGrupo,
+        ciudad:          form.ciudad,
+        plataforma:      form.plataforma||sol.plataforma||'Manual',
+        fechaCierre:     form.fechaCierre||null,
+        valor:           form.valor?Number(form.valor.replace(/[^0-9]/g,'')):null,
+        entidadRegistro: form.entidadGrupo,
+      })});
+      const data=await res.json();
+      if(!res.ok||!data.ok)throw new Error(data.error??'No se pudo guardar');
+      onGuardado({...sol,...data.solicitud});
+      onClose();
+    }catch(e){setError(e instanceof Error?e.message:'Error al guardar.');}
+    finally{setGuardando(false);}
+  };
+
+  const iS:React.CSSProperties={width:'100%',height:38,border:'1.5px solid #e2e8f0',borderRadius:8,padding:'0 12px',fontSize:13,fontFamily:'var(--font)',color:'#1e293b',outline:'none',boxSizing:'border-box' as const,background:'white'};
+  const iSdis:React.CSSProperties={...iS,background:'#f8fafc',color:'#94a3b8'};
+  const lS:React.CSSProperties={fontSize:12,fontWeight:600,color:'#374151',display:'block',marginBottom:5};
+  const fG:React.CSSProperties={display:'flex',flexDirection:'column' as const,gap:4};
+
+  return(
+    <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div style={{background:'white',borderRadius:8,width:'96vw',maxWidth:860,maxHeight:'94vh',display:'flex',flexDirection:'column',boxShadow:'0 8px 32px rgba(0,0,0,.15)',overflow:'hidden'}}>
+
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'20px 28px 16px',borderBottom:'1px solid #f1f5f9',flexShrink:0}}>
+          <div>
+            <h3 style={{margin:0,fontSize:17,fontWeight:600,color:'#111827'}}>Editar solicitud</h3>
+            <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Solicitud #{sol.id}</div>
+          </div>
+          <button onClick={onClose} style={{width:28,height:28,borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#6b7280'}}
+            onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#fef2f2';(e.currentTarget as HTMLButtonElement).style.color='#ef4444';}}
+            onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';(e.currentTarget as HTMLButtonElement).style.color='#6b7280';}}>
+            <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <div style={{overflowY:'auto',flex:1,padding:'20px 28px',display:'flex',flexDirection:'column',gap:14}}>
+          {error&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,padding:'9px 12px',color:'#dc2626',fontSize:12}}>⚠️ {error}</div>}
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <div style={fG}>
+              <label style={lS}>Fecha de creación</label>
+              <input style={iSdis} value={form.fechaCreacion} readOnly/>
+            </div>
+            <div style={fG}>
+              <label style={lS}>Usuario registra</label>
+              <input style={iSdis} value={form.nombrePersonal} readOnly/>
+            </div>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <div style={fG}>
+              <label style={lS}>* Tipo de proceso</label>
+              <select style={iS} value={form.tipoProceso} onChange={e=>{set('tipoProceso',e.target.value);set('subtipoProceso','');}}>
+                <option value="">— Seleccione —</option>
+                {TIPOS_PROCESO.map(t=><option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div style={fG}>
+              <label style={lS}>* Entidad del grupo</label>
+              <select style={iS} value={form.entidadGrupo} onChange={e=>set('entidadGrupo',e.target.value)}>
+                <option value="">— Seleccione —</option>
+                {ENTIDADES_GRUPO.map(e=><option key={e} value={e}>{e}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <div style={fG}>
+              <label style={lS}>Modalidad</label>
+              <select style={form.tipoProceso?iS:iSdis} value={form.subtipoProceso} onChange={e=>set('subtipoProceso',e.target.value)} disabled={!form.tipoProceso}>
+                <option value="">— Seleccione —</option>
+                {subtipos.map(s=><option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div style={fG}>
+              <label style={lS}>* Ciudad</label>
+              <select style={iS} value={form.ciudad} onChange={e=>set('ciudad',e.target.value)}>
+                <option value="">— Seleccione —</option>
+                {CIUDADES_CO.map(c=><option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <div style={fG}>
+              <label style={lS}>* Cliente</label>
+              <input style={iS} placeholder="Nombre del cliente o entidad contratante" value={form.entidad} onChange={e=>set('entidad',e.target.value)}/>
+            </div>
+            <div style={fG}>
+              <label style={lS}>* No. proceso</label>
+              <input style={iS} placeholder="Ej. MC-007-2026" value={form.codigoProceso} onChange={e=>set('codigoProceso',e.target.value)}/>
+            </div>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <div style={fG}>
+              <label style={lS}>Presupuesto</label>
+              <input style={iS} placeholder="Ej. 150000000" type="text" value={form.valor} onChange={e=>set('valor',e.target.value.replace(/[^0-9]/g,''))}/>
+            </div>
+            <div style={fG}>
+              <label style={lS}>Plataforma</label>
+              <input style={iS} placeholder="Ej. SECOP II, Portal propio…" value={form.plataforma} onChange={e=>set('plataforma',e.target.value)}/>
+            </div>
+          </div>
+
+          <div style={fG}>
+            <label style={lS}>* Descripción</label>
+            <textarea style={{...iS,height:80,padding:'8px 12px',resize:'vertical' as const,lineHeight:1.5}} placeholder="Descripción del objeto del contrato o proceso…" value={form.objeto} onChange={e=>set('objeto',e.target.value)}/>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <div style={fG}>
+              <label style={lS}>Fecha cierre</label>
+              <input type="date" style={iS} value={form.fechaCierre} onChange={e=>set('fechaCierre',e.target.value)}/>
+            </div>
+            <div/>
+          </div>
+        </div>
+
+        <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:12,padding:'16px 28px',borderTop:'1px solid #f1f5f9',background:'white',flexShrink:0}}>
+          <button onClick={handleGuardar} disabled={guardando} style={{height:38,padding:'0 32px',borderRadius:6,background:guardando?'#6b93c4':'#2563eb',color:'white',border:'none',fontSize:13,fontWeight:600,fontFamily:'var(--font)',cursor:guardando?'not-allowed':'pointer'}}>
+            {guardando?'Guardando…':'Guardar'}
+          </button>
+          <button onClick={()=>{try{localStorage.removeItem(DRAFT_KEY);}catch{/**/}onClose();}} disabled={guardando} style={{height:38,padding:'0 24px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#374151',fontSize:13,fontFamily:'var(--font)',cursor:'pointer'}}>Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   MODAL CREAR SOLICITUD MANUAL
+══════════════════════════════════════════════════════════════ */
+const ENTIDADES_GRUPO=['Aseocolba','Vigicolba','Tempocolba'];
+const TIPOS_PROCESO=['Público','Privado'];
+const SUBTIPOS:Record<string,string[]>={
+  'Público':['Licitación pública','Selección abreviada','Concurso de méritos','Contratación directa','Mínima cuantía','Régimen especial'],
+  'Privado':['Cotización','Contrato directo','Invitación privada','Otro'],
+};
+const UEN_OPTIONS=['Barranquilla','Bogotá','Mina'];
+const CIUDADES_CO=['Medellín','Bogotá D.C.','Cali','Barranquilla','Cartagena','Bucaramanga','Pereira','Manizales','Cúcuta','Ibagué','Santa Marta','Villavicencio','Pasto','Montería','Neiva','Armenia','Popayán','Valledupar','Sincelejo','Tunja','Riohacha','Quibdó','Florencia','Mocoa','Leticia','Puerto Inírida','San José del Guaviare','Mitú','Puerto Carreño','Yopal','Arauca','San Andrés','Otra'];
+
+function ModalCrearSolicitud({sesion,onClose,onCreada}:{sesion:Sesion;onClose:()=>void;onCreada:()=>void}){
+  const ahora=new Date().toLocaleString('es-CO',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).replace(',','');
+  const DRAFT_KEY='licycolba_draft_solicitud';
+  const formInicial={fechaSolicitud:ahora,nombrePersonal:sesion.usuario,tipoProceso:'',subtipoProceso:'',entidadGrupo:'',uen:'',ciudad:'',entidad:'',codigoProceso:'',objeto:'',valor:'',departamento:'',plataforma:'',linkDetalle:'',fechaCierre:''};
+  const [form,setForm]=useState(()=>{try{const raw=localStorage.getItem(DRAFT_KEY);if(raw){const draft=JSON.parse(raw);return{...formInicial,...draft,fechaSolicitud:ahora,nombrePersonal:sesion.usuario};}}catch{/**/}return formInicial;});
+  const [tieneBorrador,setTieneBorrador]=React.useState(()=>{try{const raw=localStorage.getItem(DRAFT_KEY);if(!raw)return false;const d=JSON.parse(raw);return!!(d.entidad||d.codigoProceso||d.objeto||d.tipoProceso);}catch{return false;}});
+  const [guardando,setGuardando]=useState(false);
+  const [error,setError]=useState('');
+
+  const set=(f:string,v:string)=>setForm(p=>({...p,[f]:v}));
+  const subtipos=SUBTIPOS[form.tipoProceso]||[];
+
+  const handleGuardar=async()=>{
+    setError('');
+    if(!form.tipoProceso||!form.entidadGrupo||!form.ciudad||!form.entidad||!form.codigoProceso||!form.objeto){
+      setError('Los campos marcados con * son obligatorios.');return;
+    }
+    setGuardando(true);
+    try{
+      // Mapear solo los campos que existen en el modelo Solicitud
+      const modalidadFinal = form.subtipoProceso
+        ? `${form.tipoProceso} — ${form.subtipoProceso}`
+        : form.tipoProceso;
+      const observacionFinal = form.uen ? `UEN: ${form.uen}` : null;
+
+      const res=await fetch('/api/solicitudes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        codigoProceso:   form.codigoProceso,
+        nombreProceso:   form.objeto,
+        entidad:         form.entidad,
+        objeto:          form.objeto,
+        modalidad:       form.subtipoProceso||form.tipoProceso,
+        sede:            form.tipoProceso,
+        perfil:          form.entidadGrupo,
+        ciudad:          form.ciudad,
+        plataforma:      form.plataforma||'Manual',
+        linkDetalle:     form.linkDetalle,
+        fechaCierre:     form.fechaCierre||null,
+        observacion:     observacionFinal,
+        valor:           form.valor?Number(form.valor.replace(/[^0-9]/g,'')):null,
+        estadoSolicitud: 'En revisión',
+        usuarioRegistro: sesion.usuario,
+        emailRegistro:   sesion.email,
+        cargoRegistro:   sesion.cargo,
+        entidadRegistro: form.entidadGrupo,
+        fuente:          form.plataforma||'Manual',
+        aliasFuente:     '',
+        docData:[],procData:{},obsData:[],
+      })});
+      const data=await res.json();
+      if(!res.ok||!data.ok)throw new Error(data.error??'No se pudo crear la solicitud');
+      try{localStorage.removeItem(DRAFT_KEY);}catch{/**/}
+      onCreada();onClose();
+    }catch(e){setError(e instanceof Error?e.message:'Error al guardar.');}
+    finally{setGuardando(false);}
+  };
+
+  const iS:React.CSSProperties={width:'100%',height:38,border:'1.5px solid #e2e8f0',borderRadius:8,padding:'0 12px',fontSize:13,fontFamily:'var(--font)',color:'#1e293b',outline:'none',boxSizing:'border-box' as const,background:'white'};
+  const iSdis:React.CSSProperties={...iS,background:'#f8fafc',color:'#94a3b8'};
+  const lS:React.CSSProperties={fontSize:12,fontWeight:600,color:'#374151',display:'block',marginBottom:5};
+  const fG:React.CSSProperties={display:'flex',flexDirection:'column' as const,gap:4};
+
+  return(
+    <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div style={{background:'white',borderRadius:8,width:'96vw',maxWidth:860,maxHeight:'94vh',display:'flex',flexDirection:'column',boxShadow:'0 8px 32px rgba(0,0,0,.15)',overflow:'hidden'}}>
+
+        {/* HEADER — minimalista */}
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'20px 28px 16px',borderBottom:'1px solid #f1f5f9',flexShrink:0}}>
+          <h3 style={{margin:0,fontSize:17,fontWeight:600,color:'#111827'}}>Crear solicitud</h3>
+          <button onClick={onClose} style={{width:28,height:28,borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#6b7280'}}
+            onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#fef2f2';(e.currentTarget as HTMLButtonElement).style.color='#ef4444';}}
+            onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';(e.currentTarget as HTMLButtonElement).style.color='#6b7280';}}>
+            <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        {/* BODY */}
+        <div style={{overflowY:'auto',flex:1,padding:'20px 28px',display:'flex',flexDirection:'column',gap:14}}>
+          {error&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,padding:'9px 12px',color:'#dc2626',fontSize:12}}>⚠️ {error}</div>}
+          {tieneBorrador&&<div style={{background:'#fefce8',border:'1px solid #fde68a',borderRadius:6,padding:'9px 12px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}><span style={{fontSize:12,color:'#92400e'}}>📋 Se restauró un borrador guardado automáticamente.</span><button onClick={()=>{try{localStorage.removeItem(DRAFT_KEY);}catch{/**/}setForm({...formInicial,fechaSolicitud:ahora,nombrePersonal:sesion.usuario});setTieneBorrador(false);}} style={{fontSize:11,color:'#92400e',background:'none',border:'1px solid #fde68a',borderRadius:4,padding:'2px 8px',cursor:'pointer',fontFamily:'var(--font)'}}>Descartar</button></div>}
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <div style={fG}>
+              <label style={lS}>Fecha de creación</label>
+              <input style={iSdis} value={form.fechaSolicitud} readOnly/>
+            </div>
+            <div style={fG}>
+              <label style={lS}>Usuario registra</label>
+              <input style={iSdis} value={form.nombrePersonal} readOnly/>
+            </div>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <div style={fG}>
+              <label style={lS}>* Tipo de proceso</label>
+              <select style={iS} value={form.tipoProceso} onChange={e=>{set('tipoProceso',e.target.value);set('subtipoProceso','');}}>
+                <option value="">— Seleccione —</option>
+                {TIPOS_PROCESO.map(t=><option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div style={fG}>
+              <label style={lS}>* Entidad del grupo</label>
+              <select style={iS} value={form.entidadGrupo} onChange={e=>set('entidadGrupo',e.target.value)}>
+                <option value="">— Seleccione —</option>
+                {ENTIDADES_GRUPO.map(e=><option key={e} value={e}>{e}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <div style={fG}>
+              <label style={lS}>Modalidad</label>
+              <select style={form.tipoProceso?iS:iSdis} value={form.subtipoProceso} onChange={e=>set('subtipoProceso',e.target.value)} disabled={!form.tipoProceso}>
+                <option value="">— Seleccione —</option>
+                {subtipos.map(s=><option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div style={fG}>
+              <label style={lS}>* Ciudad</label>
+              <select style={iS} value={form.ciudad} onChange={e=>set('ciudad',e.target.value)}>
+                <option value="">— Seleccione —</option>
+                {CIUDADES_CO.map(c=><option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <div style={fG}>
+              <label style={lS}>* Cliente</label>
+              <input style={iS} placeholder="Nombre del cliente o entidad contratante" value={form.entidad} onChange={e=>set('entidad',e.target.value)}/>
+            </div>
+            <div style={fG}>
+              <label style={lS}>* No. proceso</label>
+              <input style={iS} placeholder="Ej. MC-007-2026" value={form.codigoProceso} onChange={e=>set('codigoProceso',e.target.value)}/>
+            </div>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <div style={fG}>
+              <label style={lS}>Presupuesto</label>
+              <input style={iS} placeholder="Ej. 150000000" type="text" value={form.valor} onChange={e=>set('valor',e.target.value.replace(/[^0-9]/g,''))}/>
+            </div>
+            <div style={fG}>
+              <label style={lS}>Plataforma</label>
+              <input style={iS} placeholder="Ej. SECOP II, Portal propio…" value={form.plataforma} onChange={e=>set('plataforma',e.target.value)}/>
+            </div>
+          </div>
+
+          <div style={fG}>
+            <label style={lS}>* Descripción</label>
+            <textarea style={{...iS,height:80,padding:'8px 12px',resize:'vertical' as const,lineHeight:1.5}} placeholder="Descripción del objeto del contrato o proceso…" value={form.objeto} onChange={e=>set('objeto',e.target.value)}/>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <div style={fG}>
+              <label style={lS}>Fecha cierre</label>
+              <input type="date" style={iS} value={form.fechaCierre} onChange={e=>set('fechaCierre',e.target.value)}/>
+            </div>
+            <div/>
+          </div>
+        </div>
+
+        {/* FOOTER — centrado igual que la imagen */}
+        <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:12,padding:'16px 28px',borderTop:'1px solid #f1f5f9',background:'white',flexShrink:0}}>
+          <button onClick={handleGuardar} disabled={guardando} style={{height:38,padding:'0 32px',borderRadius:6,background:guardando?'#6b93c4':'#2563eb',color:'white',border:'none',fontSize:13,fontWeight:600,fontFamily:'var(--font)',cursor:guardando?'not-allowed':'pointer'}}>
+            {guardando?'Guardando…':'Guardar'}
+          </button>
+          <button onClick={onClose} disabled={guardando} style={{height:38,padding:'0 24px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#374151',fontSize:13,fontFamily:'var(--font)',cursor:'pointer'}}>Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Config por variante ── */
+type VarianteSolicitudes = 'COMERCIAL' | 'ESPECIALIZADA' | 'TODAS' | 'RECHAZADA';
+const VARIANTE_CONFIG:Record<VarianteSolicitudes,{titulo:string;emptyMsg:string}> = {
+  COMERCIAL:     {titulo:'Solicitudes abiertas — Comercial',   emptyMsg:'No hay solicitudes comerciales abiertas. Gestiona un proceso desde Búsqueda de procesos.'},
+  ESPECIALIZADA: {titulo:'Solicitudes abiertas — Especializados', emptyMsg:'No hay solicitudes especializadas abiertas.'},
+  TODAS:         {titulo:'Solicitudes abiertas',               emptyMsg:'No hay solicitudes abiertas. Gestiona un proceso desde Búsqueda de procesos.'},
+  RECHAZADA:     {titulo:'Solicitudes rechazadas',              emptyMsg:'No hay solicitudes rechazadas.'},
+};
+/* Heurística de origen mientras no exista origenSolicitud en BD:
+   COMERCIAL    = tiene codigoProceso  (viene de Búsqueda de procesos, no es manual)
+   ESPECIALIZADA = no tiene codigoProceso (creada manualmente)
+   Se reemplaza fácilmente cuando se agregue s.origenSolicitud al modelo */
+function matchVariante(s:Solicitud, variante:VarianteSolicitudes):boolean {
+  if(variante==='TODAS') return true;
+  if(variante==='RECHAZADA') return (s.estadoSolicitud||'').toLowerCase().includes('rechazad');
+  const tieneOrigen = !!(s.codigoProceso && s.codigoProceso.trim());
+  return variante==='COMERCIAL' ? tieneOrigen : !tieneOrigen;
+}
+
+function ModuloSolicitudesAbiertasBase({sesion,variante}:{sesion:Sesion;variante:VarianteSolicitudes}){
+  const cfg = VARIANTE_CONFIG[variante];
   const [solicitudes,setSolicitudes]=useState<Solicitud[]>([]);
   const [cargando,setCargando]=useState(true);const[error,setError]=useState('');
   const [busqueda,setBusqueda]=useState('');
   const [seleccionados,setSeleccionados]=useState<number[]>([]);
   const [modalProceso,setModalProceso]=useState<Solicitud|null>(null);
   const [modalEliminar,setModalEliminar]=useState(false);
+  const [modalCrear,setModalCrear]=useState(false);
+  const [modalEditar,setModalEditar]=useState<Solicitud|null>(null);
 
   const cargar=useCallback(async()=>{
     setCargando(true);setError('');
     try{
-      const res=await fetch('/api/solicitudes?estado=En%20revisi%C3%B3n&limit=200');
+      const estadoQuery=variante==='RECHAZADA'?'Rechazada':'En%20revisi%C3%B3n';
+      const res=await fetch(`/api/solicitudes?estado=${estadoQuery}&limit=200`);
       const data=await res.json();
       if(!res.ok||!data.ok){setError(data.error??'Error al cargar solicitudes.');return;}
       setSolicitudes((data.solicitudes??[]).slice().sort((a:Solicitud,b:Solicitud)=>a.id-b.id));
@@ -756,26 +1176,68 @@ function ModuloSolicitudesAbiertas({sesion}:{sesion:Sesion}){
   },[]);
   useEffect(()=>{cargar();},[cargar]);
 
-  const filtradas=useMemo(()=>solicitudes.filter(s=>{
+  /* Primero filtrar por variante, luego por búsqueda */
+  const porVariante=useMemo(()=>solicitudes.filter(s=>matchVariante(s,variante)),[solicitudes,variante]);
+
+  const filtradas=useMemo(()=>porVariante.filter(s=>{
     const q=busqueda.toLowerCase();
     return[s.codigoProceso,s.entidad,s.objeto,s.perfil,s.departamento,
            s.estadoSolicitud,s.usuarioRegistro,s.ciudad,s.modalidad,
            s.sqrNumero].some(v=>(v||'').toLowerCase().includes(q));
-  }),[solicitudes,busqueda]);
+  }),[porVariante,busqueda]);
 
   const todosMarcados=filtradas.length>0&&seleccionados.length===filtradas.length;
   const toggleAll=(c:boolean)=>setSeleccionados(c?filtradas.map(s=>s.id):[]);
-  const toggleOne=(id:number,c:boolean)=>setSeleccionados(p=>c?[...p,id]:p.filter(x=>x!==id));
+  const toggleOne=(id:number,c:boolean)=>setSeleccionados(c?[id]:[]);
   const abrirModal=(s:Solicitud)=>setModalProceso(s);
 
   const fmtFecha=(r:string|null)=>{if(!r)return'—';const d=new Date(r);return isNaN(d.getTime())?r:d.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});};
   const fmtFechaCorta=(r:string|null)=>{if(!r)return'—';const d=new Date(r);return isNaN(d.getTime())?r:d.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'});};
   const fmtV=(v:number|null)=>{if(!v||v===0)return'—';return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',minimumFractionDigits:0}).format(v);};
-  const tipoFromFuente=(f:string)=>(f||'').toLowerCase().includes('secop')?'Público':'Privado';
+  const tipoFromSolicitud=(s:Solicitud)=>{if((s.fuente||'').toLowerCase().includes('secop'))return'Público';if(s.sede==='Público'||s.sede==='Privado')return s.sede;return(s.fuente||'').toLowerCase().includes('manual')?'Manual':'Privado';};
   const sqrDisplay=(s:Solicitud)=>{
     if(s.sqrError)return{label:'Error SQR',bg:'#fef2f2',color:'#dc2626'};
     if(s.sqrNumero)return{label:s.sqrNumero,bg:'#E8F5E9',color:'#15803d'};
     return{label:'Sin SQR',bg:'#f1f5f9',color:'#94a3b8'};
+  };
+
+  const exportarExcelSolicitudes=()=>{
+    const datos=filtradas.length>0?filtradas:porVariante;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hacer=(XLSX:any)=>{
+      const cab=['N°','Estado','SQR','Fecha creación','Tipo proceso','Modalidad','Entidad grupo','Descripción','Cliente','No. proceso','Presupuesto','Ciudad','Plataforma','Usuario registra','Fecha cierre'];
+      const filas=datos.map(s=>[
+        s.id,
+        s.estadoSolicitud||'',
+        s.sqrNumero||'',
+        s.createdAt?new Date(s.createdAt).toLocaleDateString('es-CO'):'',
+        (s.fuente||'').toLowerCase().includes('secop')?'Público':'Privado',
+        MMAP_MODALIDAD[s.modalidad]||s.modalidad||'',
+        s.perfil||'',
+        s.objeto||'',
+        s.entidad||'',
+        s.codigoProceso||'',
+        s.valor||0,
+        s.ciudad||s.departamento?.split(':')[0]?.trim()||'',
+        s.plataforma||s.aliasFuente||'',
+        s.usuarioRegistro||'',
+        s.fechaCierre||s.fechaVencimiento?new Date(s.fechaCierre||s.fechaVencimiento||'').toLocaleDateString('es-CO'):'',
+      ]);
+      const wb=XLSX.utils.book_new();
+      const ws=XLSX.utils.aoa_to_sheet([cab,...filas]);
+      ws['!cols']=[{wch:6},{wch:14},{wch:14},{wch:18},{wch:12},{wch:22},{wch:14},{wch:50},{wch:30},{wch:18},{wch:16},{wch:14},{wch:14},{wch:20},{wch:14}];
+      // Formato moneda en columna Presupuesto (índice 10)
+      const range=XLSX.utils.decode_range(ws['!ref']??'A1');
+      for(let R=1;R<=range.e.r;R++){const cell=ws[XLSX.utils.encode_cell({r:R,c:10})];if(cell&&cell.t==='n')cell.z='$#,##0';}
+      const titulo=cfg.titulo.replace(/\s+/g,'_').replace(/[^a-zA-Z0-9_]/g,'');
+      XLSX.utils.book_append_sheet(wb,ws,cfg.titulo.slice(0,31));
+      XLSX.writeFile(wb,`${titulo}_${new Date().toISOString().slice(0,10)}.xlsx`,{bookType:'xlsx',type:'binary'});
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if((window as any).XLSX){hacer((window as any).XLSX);}
+    else{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    s.onload=()=>hacer((window as any).XLSX);document.head.appendChild(s);}
   };
 
   const COLS=[
@@ -801,21 +1263,23 @@ function ModuloSolicitudesAbiertas({sesion}:{sesion:Sesion}){
   if(error)return<div className="content"><div className="module-status error">{error}</div></div>;
 
   return(<>
+    {modalCrear&&<ModalCrearSolicitud sesion={sesion} onClose={()=>setModalCrear(false)} onCreada={()=>{setModalCrear(false);cargar();}}/>}
+    {modalEditar&&<ModalEditarSolicitud sol={modalEditar} sesion={sesion} onClose={()=>setModalEditar(null)} onGuardado={(updated)=>{setSolicitudes(prev=>prev.map(s=>s.id===updated.id?updated:s));setModalEditar(null);setSeleccionados([]);}}/>}
     {modalProceso&&<ModalProceso sol={modalProceso} onClose={()=>setModalProceso(null)} onGuardado={(updated)=>{setSolicitudes(prev=>prev.map(s=>s.id===updated.id?updated:s));setModalProceso(null);}}/>}
     {modalEliminar&&<ModalConfirmarEliminarSolicitud solicitudes={solicitudes.filter(s=>seleccionados.includes(s.id))} onClose={()=>setModalEliminar(false)} onEliminado={()=>{setSeleccionados([]);cargar();}} sesion={sesion}/>}
     <div className="content">
       <div className="page-header">
-        <div className="page-title"><IcoSolicitudes/><span>Solicitudes abiertas : {filtradas.length} / {solicitudes.length}</span></div>
+        <div className="page-title"><IcoSolicitudes/><span>{cfg.titulo} : {filtradas.length} / {porVariante.length}</span></div>
         <div className="page-actions">
           <input type="text" className="search-box" placeholder="Buscar…" value={busqueda} onChange={e=>setBusqueda(e.target.value)}/>
           <button className="icon-btn" title="Información"><IcoInfo/></button>
           <button className="icon-btn" title="Filtrar"><IcoFilter/></button>
           <button className="icon-btn" title="Actualizar" onClick={()=>{setBusqueda('');cargar();}}><IcoRefresh/></button>
           <button className="icon-btn" title="Columnas"><IcoColumns/></button>
-          <button className="icon-btn blue-fill" title="Nueva solicitud"><IcoPlus/></button>
-          <button className="icon-btn" title="Ver ficha detallada" disabled={seleccionados.length!==1} onClick={()=>{const s=solicitudes.find(s=>s.id===seleccionados[0]);if(s)abrirModal(s);}}><IcoPencil/></button>
+          <button className="icon-btn blue-fill" title="Nueva solicitud" onClick={()=>setModalCrear(true)}><IcoPlus/></button>
+          <button className="icon-btn" title="Editar solicitud" disabled={seleccionados.length!==1} onClick={()=>{const s=solicitudes.find(s=>s.id===seleccionados[0]);if(s)setModalEditar(s);}}><IcoPencil/></button>
           <button className="icon-btn red" title="Eliminar" disabled={seleccionados.length===0} onClick={()=>setModalEliminar(true)}><IcoTrash/></button>
-          <button className="icon-btn green" title="Exportar Excel"><IcoExcel/></button>
+          <button className="icon-btn green" title="Exportar Excel" onClick={exportarExcelSolicitudes}><IcoExcel/></button>
         </div>
       </div>
       <div className="table-card">
@@ -831,12 +1295,12 @@ function ModuloSolicitudesAbiertas({sesion}:{sesion:Sesion}){
             <tbody>
               {filtradas.length===0
                 ?<tr><td colSpan={COLS.length+1} style={{textAlign:'center',color:'#6b7280',padding:'36px 10px',fontSize:13}}>
-                  {solicitudes.length===0?'No hay solicitudes abiertas. Gestiona un proceso desde Búsqueda de procesos.':'Sin resultados.'}
+                  {porVariante.length===0?cfg.emptyMsg:'Sin resultados.'}
                 </td></tr>
                 :filtradas.map(s=>{
                   const ebc=estadoSolicitudColor(s.estadoSolicitud||'');
                   const pc=s.perfil?perfilColor(s.perfil):null;
-                  const tipoP=tipoFromFuente(s.fuente);
+                  const tipoP=tipoFromSolicitud(s);
                   const sqr=sqrDisplay(s);
                   return(
                     <tr key={s.id} onDoubleClick={()=>abrirModal(s)} style={{cursor:'default'}}>
@@ -853,7 +1317,7 @@ function ModuloSolicitudesAbiertas({sesion}:{sesion:Sesion}){
                       </td>
                       <td><span style={{display:'inline-flex',alignItems:'center',fontSize:10.5,fontWeight:700,padding:'3px 9px',borderRadius:20,background:sqr.bg,color:sqr.color,whiteSpace:'nowrap',fontFamily:'monospace',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis'}} title={sqr.label}>{sqr.label}</span></td>
                       <td style={{fontSize:12,color:'#64748b',whiteSpace:'nowrap'}}>{fmtFecha(s.createdAt)}</td>
-                      <td><span style={{fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:20,background:tipoP==='Público'?'#EAF2FB':'#F3E5F5',color:tipoP==='Público'?'#1E5799':'#4A148C',whiteSpace:'nowrap'}}>{tipoP}</span></td>
+                      <td><span style={{fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:20,background:tipoP==='Público'?'#EAF2FB':tipoP==='Privado'?'#F3E5F5':'#F1F5F9',color:tipoP==='Público'?'#1E5799':tipoP==='Privado'?'#4A148C':'#64748b',whiteSpace:'nowrap'}}>{tipoP}</span></td>
                       <td style={{fontSize:12,color:'#374151'}}>{MMAP_MODALIDAD[s.modalidad]||s.modalidad||'—'}</td>
                       <td>{pc?<span style={{fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:20,background:pc.bg,color:pc.color,whiteSpace:'nowrap'}}>{pc.label}</span>:<span style={{fontSize:12,color:'#374151'}}>—</span>}</td>
                       <td style={{maxWidth:248}} title={s.objeto||''}><div style={{fontSize:12,color:'#374151',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:248}}>{s.objeto||'—'}</div></td>
@@ -879,6 +1343,12 @@ function ModuloSolicitudesAbiertas({sesion}:{sesion:Sesion}){
     </div>
   </>);
 }
+
+/* ── Wrappers de variante — reutilizan la base sin duplicar código ── */
+function ModuloSolicitudesAbiertas({sesion}:{sesion:Sesion}){return<ModuloSolicitudesAbiertasBase sesion={sesion} variante="TODAS"/>;}
+function ModuloSolicitudesRechazadas({sesion}:{sesion:Sesion}){return<ModuloSolicitudesAbiertasBase sesion={sesion} variante="RECHAZADA"/>;}
+function ModuloSolicitudesComercial({sesion}:{sesion:Sesion}){return<ModuloSolicitudesAbiertasBase sesion={sesion} variante="COMERCIAL"/>;}
+function ModuloSolicitudesEspecializada({sesion}:{sesion:Sesion}){return<ModuloSolicitudesAbiertasBase sesion={sesion} variante="ESPECIALIZADA"/>;}
 
 /* ══════════════════════════════════════════════════════════════
    MÓDULO SOLICITUDES ELIMINADAS
@@ -1087,6 +1557,270 @@ function ModuloUsuariosEliminados(){
   return(<div className="content"><div className="page-header"><div className="page-title"><IcoTrash/><span>Usuarios eliminados : {filtrados.length} / {registros.length}</span></div><div className="page-actions"><input type="text" className="search-box" placeholder="Buscar…" value={busqueda} onChange={e=>setBusqueda(e.target.value)}/><button className="icon-btn" onClick={()=>{setBusqueda('');cargar();}}><IcoRefresh/></button></div></div><div className="table-card"><div className="table-scroll"><table><thead><tr>{['Cédula','Celular','Entidad','Cargo','Email','Usuario','Rol','Estado','Eliminado por','Correo eliminador','Fecha eliminación'].map(h=><th key={h}><div className="th-top">{h}</div></th>)}</tr></thead><tbody>{filtrados.length===0?<tr><td colSpan={11} style={{textAlign:'center',color:'#6b7280',padding:'28px 10px'}}>No hay registros.</td></tr>:filtrados.map(u=><tr key={u.id}><td>{u.cedula}</td><td>{u.celular}</td><td>{u.entidadGrupo}</td><td>{u.cargo}</td><td>{u.email}</td><td>{u.usuario}</td><td>{u.rol}</td><td><span className="badge" style={{background:'#fee2e2',color:'#dc2626',fontSize:11}}>{u.estado}</span></td><td>{u.deletedByUsuario||'—'}</td><td>{u.deletedByEmail||'—'}</td><td>{fmt(u.deletedAt)}</td></tr>)}</tbody></table></div><div className="pagination-bar"><span>1 - {filtrados.length} de {registros.length}</span></div></div></div>);
 }
 
+/* ══════════════════════════════════════════════════════════════
+   MÓDULO PROCESOS NUEVOS
+══════════════════════════════════════════════════════════════ */
+interface ProcesoNuevoItem {
+  id:number; procesoId:number|null; sourceKey:string;
+  codigoProceso:string|null; nombre:string|null; entidad:string|null;
+  objeto:string|null; fuente:string|null; aliasFuente:string|null;
+  modalidad:string|null; perfil:string|null; departamento:string|null;
+  estadoFuente:string|null; fechaPublicacion:string|null;
+  fechaVencimiento:string|null; valor:number|null;
+  linkDetalle:string|null; linkSecop:string|null; linkSecopReg:string|null;
+  fechaDeteccion:string;
+}
+
+function ModuloProcesoNuevos({sesion,onModuleChange}:{sesion:Sesion;onModuleChange:(m:string)=>void}){
+  const [procesos,setProcesos]=useState<ProcesoNuevoItem[]>([]);
+  const [total,setTotal]=useState(0);const[totalPages,setTotalPages]=useState(1);
+  const [pagina,setPagina]=useState(1);
+  const [cargando,setCargando]=useState(true);
+  const [error,setError]=useState('');
+  const [busqueda,setBusqueda]=useState('');
+  const [filtro,setFiltro]=useState<'hoy'|'ayer'|'semana'|'rango'>('hoy');
+  const [desde,setDesde]=useState('');
+  const [hasta,setHasta]=useState('');
+  const [detalle,setDetalle]=useState<ProcesoNuevoItem|null>(null);
+  const [gestionando,setGestionando]=useState(false);
+  const [errorGestion,setErrorGestion]=useState('');
+  const LIMIT=30;
+
+  const cargar=useCallback(async(pag:number)=>{
+    setCargando(true);setError('');
+    try{
+      const params=new URLSearchParams({filtro,page:String(pag),limit:String(LIMIT)});
+      if(filtro==='rango'&&desde)params.set('desde',desde);
+      if(filtro==='rango'&&hasta)params.set('hasta',hasta);
+      const res=await fetch(`/api/procesos/nuevos?${params}`);
+      const data=await res.json();
+      if(!res.ok||!data.ok){setError(data.error??'Error al cargar.');return;}
+      setProcesos(data.procesos??[]);setTotal(data.total??0);setTotalPages(data.totalPages??1);setPagina(data.page??pag);
+    }catch{setError('No se pudo conectar.');}finally{setCargando(false);}
+  },[filtro,desde,hasta]);
+
+  useEffect(()=>{cargar(1);},[cargar]);
+
+  const handleGestionar=async(p:ProcesoNuevoItem)=>{
+    setGestionando(true);setErrorGestion('');
+    try{
+      const res=await fetch('/api/solicitudes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        externalId:p.procesoId||null,codigoProceso:p.codigoProceso,nombreProceso:p.nombre,
+        entidad:p.entidad,objeto:p.objeto,fuente:p.fuente,aliasFuente:p.aliasFuente,
+        modalidad:p.modalidad,perfil:p.perfil,departamento:p.departamento,
+        estadoFuente:p.estadoFuente,fechaPublicacion:p.fechaPublicacion,
+        fechaVencimiento:p.fechaVencimiento,valor:p.valor,
+        linkDetalle:p.linkDetalle,linkSecop:p.linkSecop,linkSecopReg:p.linkSecopReg,
+        usuarioRegistro:sesion.usuario,emailRegistro:sesion.email,
+        cargoRegistro:sesion.cargo,entidadRegistro:sesion.entidadGrupo,
+        estadoSolicitud:'En revisión',docData:[],procData:{},
+      })});
+      const data=await res.json();
+      if(!res.ok||!data.ok)throw new Error(data.error??'No se pudo crear la solicitud');
+      setDetalle(null);onModuleChange('solicitudesAbiertas');
+    }catch(e){setErrorGestion(e instanceof Error?e.message:'Error al gestionar.');}finally{setGestionando(false);}
+  };
+
+  const fmtFecha=(r:string|null)=>{if(!r)return'—';const d=new Date(r);return isNaN(d.getTime())?r:d.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});};
+  const fmtFechaCorta=(r:string|null)=>{if(!r)return'—';const d=new Date(r);return isNaN(d.getTime())?r:d.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'});};
+  const fmtV=(v:number|null)=>{if(!v||v===0)return'—';return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',minimumFractionDigits:0}).format(v);};
+
+  const filtrados=useMemo(()=>{
+    if(!busqueda.trim())return procesos;
+    const q=busqueda.toLowerCase();
+    return procesos.filter(p=>[p.codigoProceso,p.entidad,p.objeto,p.perfil,p.departamento,p.fuente,p.modalidad].some(v=>(v||'').toLowerCase().includes(q)));
+  },[procesos,busqueda]);
+
+  const pagesArr=(()=>{const t=totalPages;if(t<=7)return Array.from({length:t},(_,i)=>i+1);const arr:(number|-1)[]=[];arr.push(1);if(pagina>3)arr.push(-1);for(let i=Math.max(2,pagina-1);i<=Math.min(t-1,pagina+1);i++)arr.push(i);if(pagina<t-2)arr.push(-1);arr.push(t);return arr;})();
+
+  const BTNS_FILTRO:[string,'hoy'|'ayer'|'semana'|'rango'][]=[['Hoy','hoy'],['Ayer','ayer'],['Últimos 7 días','semana'],['Rango','rango']];
+  const portalC=(a:string,f:string)=>portalColor(a||'',f||'');
+  const perfilC=(p:string|null)=>p?perfilColor(p):{bg:'#F1F5F9',color:'#475569',label:p||'—'};
+
+  return(<>
+    {detalle&&(
+      <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)setDetalle(null);}}>
+        <div style={{background:'white',borderRadius:12,width:'94vw',maxWidth:780,maxHeight:'92vh',display:'flex',flexDirection:'column',boxShadow:'0 20px 60px rgba(15,32,64,.2)',overflow:'hidden',border:'1px solid #e2e8f0'}}>
+          <div style={{background:'linear-gradient(135deg,#0d2d5e 0%,#1a5ea8 100%)',padding:'16px 22px',flexShrink:0}}>
+            <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:12}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:5,flexWrap:'wrap'}}>
+                  <span style={{fontSize:10,fontWeight:700,color:'rgba(255,255,255,.6)',letterSpacing:'0.07em'}}>PROCESO NUEVO DETECTADO</span>
+                  {detalle.aliasFuente&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:6,background:'rgba(255,255,255,.15)',color:'white',fontWeight:600}}>{portalC(detalle.aliasFuente,detalle.fuente||'').label}</span>}
+                  {detalle.perfil&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:20,background:perfilC(detalle.perfil).bg,color:perfilC(detalle.perfil).color,fontWeight:600}}>{perfilC(detalle.perfil).label}</span>}
+                </div>
+                <div style={{fontSize:15,fontWeight:700,color:'white',lineHeight:1.3,marginBottom:3}}>{detalle.entidad||'Sin entidad'}</div>
+                <div style={{fontSize:11,color:'rgba(255,255,255,.65)',fontFamily:'monospace'}}>{detalle.codigoProceso||''}</div>
+              </div>
+              <button onClick={()=>setDetalle(null)} style={{width:28,height:28,borderRadius:'50%',border:'1px solid rgba(255,255,255,.3)',background:'rgba(255,255,255,.1)',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'white',flexShrink:0}}>
+                <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:13,height:13}}><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+          </div>
+          <div style={{background:'#EAF2FB',borderBottom:'1px solid #D0E4F3',padding:'10px 22px',flexShrink:0,display:'flex',alignItems:'center',gap:10}}>
+            <svg fill="none" stroke="#1E5799" strokeWidth={2} viewBox="0 0 24 24" style={{width:16,height:16,flexShrink:0}}><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+            <span style={{fontSize:12.5,color:'#1E5799',fontWeight:500}}>Detectado el <strong>{fmtFecha(detalle.fechaDeteccion)}</strong> — primera vez en Licycolba</span>
+          </div>
+          <div style={{overflowY:'auto',flex:1,padding:'16px 22px',display:'flex',flexDirection:'column',gap:12}}>
+            {detalle.objeto&&(
+              <div style={{background:'#FAFCFF',border:'1px solid #D0E4F3',borderRadius:8,padding:'12px 14px'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#1E5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:5}}>Objeto del proceso</div>
+                <p style={{margin:0,fontSize:13,color:'#1e293b',lineHeight:1.65}}>{detalle.objeto}</p>
+              </div>
+            )}
+            <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:'12px 14px'}}>
+              <div style={{fontSize:11,fontWeight:700,color:'#1E5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',paddingBottom:8,marginBottom:8,borderBottom:'1px solid #f1f5f9'}}>Información general</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',columnGap:28}}>
+                {[
+                  {label:'Entidad',value:<strong style={{fontWeight:600}}>{detalle.entidad||'—'}</strong>},
+                  {label:'Número del proceso',value:<span style={{fontFamily:'monospace'}}>{detalle.codigoProceso||'—'}</span>},
+                  {label:'Modalidad',value:MMAP_MODALIDAD[detalle.modalidad||'']||detalle.modalidad||'—'},
+                  {label:'Fuente / portal',value:detalle.fuente||'—'},
+                  {label:'Estado fuente',value:detalle.estadoFuente||'—'},
+                  ...(detalle.departamento?[{label:'Localización',value:detalle.departamento}]:[]),
+                  ...(detalle.valor?[{label:'Presupuesto oficial',value:<span style={{fontWeight:700,color:'#15803d'}}>{fmtV(detalle.valor)}</span>}]:[]),
+                  ...(detalle.perfil?[{label:'Perfil',value:<span style={{padding:'2px 10px',borderRadius:20,fontSize:11,fontWeight:600,background:perfilC(detalle.perfil).bg,color:perfilC(detalle.perfil).color}}>{perfilC(detalle.perfil).label}</span>}]:[]),
+                  {label:'Fecha publicación fuente',value:fmtFechaCorta(detalle.fechaPublicacion)},
+                  {label:'Fecha vencimiento',value:<span style={{color:'#dc2626',fontWeight:600}}>{fmtFechaCorta(detalle.fechaVencimiento)}</span>},
+                  {label:'Detectado por Licycolba',value:<span style={{color:'#1E5799',fontWeight:600}}>{fmtFecha(detalle.fechaDeteccion)}</span>},
+                ].map(({label,value},i)=>(
+                  <div key={i} style={{padding:'8px 0',borderBottom:'1px solid #f8fafc'}}>
+                    <div style={{fontSize:10,fontWeight:700,color:'#94a3b8',textTransform:'uppercase' as const,letterSpacing:'0.06em',marginBottom:3}}>{label}</div>
+                    <div style={{fontSize:12.5,color:'#1e293b'}}>{value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {(detalle.linkSecop||detalle.linkDetalle||detalle.linkSecopReg)&&(
+              <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:'12px 14px'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#1E5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',paddingBottom:8,marginBottom:8,borderBottom:'1px solid #f1f5f9'}}>Fuentes y enlaces</div>
+                {[{label:portalColor(detalle.aliasFuente||'',detalle.fuente||'').label,url:detalle.linkSecop},{label:'Registro',url:detalle.linkSecopReg},{label:'Detalle',url:detalle.linkDetalle}].filter(f=>f.url).map((f,i)=>(
+                  <div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:i>0?'7px 0 0':'0'}}>
+                    <span style={{fontSize:11,fontWeight:600,color:'#475569',flexShrink:0,minWidth:60}}>{f.label}</span>
+                    <a href={f.url!} target="_blank" rel="noopener noreferrer" style={{fontSize:11.5,color:'#1E5799',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const}}>{f.url}</a>
+                    <CopiarLinkBtn url={f.url!}/>
+                  </div>
+                ))}
+              </div>
+            )}
+            {errorGestion&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,padding:'10px 14px',color:'#dc2626',fontSize:12}}>⚠️ {errorGestion}</div>}
+          </div>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',gap:8,padding:'12px 22px',borderTop:'1px solid #e2e8f0',background:'#FAFCFF',flexShrink:0}}>
+            {(detalle.linkSecop||detalle.linkDetalle)&&(
+              <a href={detalle.linkSecop||detalle.linkDetalle||''} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:5,height:34,padding:'0 14px',borderRadius:8,border:'1px solid #D0E4F3',background:'white',color:'#1E5799',fontSize:12,fontWeight:500,textDecoration:'none'}}>
+                <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:13,height:13}}><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                Abrir en portal
+              </a>
+            )}
+            <button onClick={()=>setDetalle(null)} style={{height:34,padding:'0 16px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#374151',fontSize:12,fontFamily:'var(--font)',cursor:'pointer'}}>Cerrar</button>
+            <button onClick={()=>handleGestionar(detalle)} disabled={gestionando} style={{display:'inline-flex',alignItems:'center',gap:6,height:34,padding:'0 18px',borderRadius:8,background:gestionando?'#6b93c4':'#1E5799',color:'white',border:'none',fontSize:12,fontWeight:600,fontFamily:'var(--font)',cursor:gestionando?'not-allowed':'pointer'}}>
+              <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:13,height:13}}><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+              {gestionando?'Creando solicitud…':'Gestionar proceso'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    <div className="content">
+      <div className="page-header">
+        <div className="page-title"><IcoBusqueda/><span>Procesos nuevos : {filtrados.length} / {total}</span></div>
+        <div className="page-actions">
+          <input type="text" className="search-box" placeholder="Buscar…" value={busqueda} onChange={e=>setBusqueda(e.target.value)} disabled={cargando}/>
+          <button className="icon-btn" title="Actualizar" onClick={()=>cargar(1)} disabled={cargando}><IcoRefresh/></button>
+        </div>
+      </div>
+
+      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+        {BTNS_FILTRO.map(([label,key])=>(
+          <button key={key} onClick={()=>{setFiltro(key);setPagina(1);}}
+            style={{height:30,padding:'0 14px',borderRadius:20,border:`1.5px solid ${filtro===key?'#1E5799':'#e2e8f0'}`,background:filtro===key?'#1E5799':'white',color:filtro===key?'white':'#374151',fontSize:12,fontWeight:filtro===key?700:400,fontFamily:'var(--font)',cursor:'pointer',transition:'all .15s'}}>
+            {label}
+          </button>
+        ))}
+        {filtro==='rango'&&(
+          <div style={{display:'flex',alignItems:'center',gap:6,marginLeft:4}}>
+            <input type="date" value={desde} onChange={e=>setDesde(e.target.value)} style={{height:30,border:'1.5px solid #e2e8f0',borderRadius:8,padding:'0 8px',fontSize:12,fontFamily:'var(--font)',color:'#374151',outline:'none'}}/>
+            <span style={{fontSize:12,color:'#94a3b8'}}>—</span>
+            <input type="date" value={hasta} onChange={e=>setHasta(e.target.value)} style={{height:30,border:'1.5px solid #e2e8f0',borderRadius:8,padding:'0 8px',fontSize:12,fontFamily:'var(--font)',color:'#374151',outline:'none'}}/>
+            <button onClick={()=>cargar(1)} disabled={!desde} style={{height:30,padding:'0 14px',borderRadius:8,background:'#1E5799',color:'white',border:'none',fontSize:12,fontWeight:600,fontFamily:'var(--font)',cursor:desde?'pointer':'not-allowed',opacity:desde?1:.5}}>Buscar</button>
+          </div>
+        )}
+        <span style={{fontSize:11.5,color:'#94a3b8',marginLeft:4}}>
+          {filtro==='hoy'&&'Detectados hoy'}
+          {filtro==='ayer'&&'Detectados ayer'}
+          {filtro==='semana'&&'Últimos 7 días'}
+          {filtro==='rango'&&desde&&`Desde ${desde}${hasta?` hasta ${hasta}`:''}`}
+        </span>
+      </div>
+
+      {error&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,padding:'10px 14px',color:'#dc2626',fontSize:12,marginBottom:12}}>⚠️ {error}</div>}
+      {cargando&&<div className="module-status">Cargando procesos nuevos…</div>}
+
+      {!cargando&&(
+        filtrados.length===0
+          ?<div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'40px 20px',textAlign:'center' as const,color:'#94a3b8',fontSize:13}}>
+            {total===0
+              ?<><p style={{margin:'0 0 8px',fontWeight:500}}>No hay procesos nuevos para el período seleccionado.</p><p style={{margin:0,fontSize:12}}>Los procesos nuevos aparecen aquí automáticamente al sincronizar.</p></>
+              :`Sin resultados para "${busqueda}".`}
+          </div>
+          :<div className="table-card">
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    {[{w:148,label:'Fecha detección'},{w:80,label:'Fuente'},{w:130,label:'Código proceso'},{w:200,label:'Entidad / Cliente'},{w:300,label:'Objeto'},{w:140,label:'Modalidad'},{w:110,label:'Perfil'},{w:160,label:'Departamento'},{w:130,label:'Ppto. oficial'},{w:110,label:'F. publicación'},{w:90,label:'Acciones'}].map(({w,label})=>(
+                      <th key={label} style={{minWidth:w}}><div className="th-top">{label}</div></th>
+                    ))}
+                  </tr>
+                  <tr>{Array.from({length:11}).map((_,i)=><th key={i}><div style={{padding:'0 10px 5px',color:'#d1d5db',fontSize:11}}>≡</div></th>)}</tr>
+                </thead>
+                <tbody>
+                  {filtrados.map(p=>{
+                    const pc2=p.perfil?perfilColor(p.perfil):null;
+                    const port=portalColor(p.aliasFuente||'',p.fuente||'');
+                    return(
+                      <tr key={p.id} style={{cursor:'default'}}
+                        onMouseOver={e=>{(e.currentTarget as HTMLTableRowElement).style.background='#f8fafc';}}
+                        onMouseOut={e=>{(e.currentTarget as HTMLTableRowElement).style.background='white';}}>
+                        <td><div style={{display:'flex',flexDirection:'column',gap:1}}><span style={{fontSize:12,fontWeight:600,color:'#1E5799'}}>{fmtFechaCorta(p.fechaDeteccion)}</span><span style={{fontSize:10.5,color:'#94a3b8'}}>{new Date(p.fechaDeteccion).toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'})}</span></div></td>
+                        <td><span style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:28,height:28,borderRadius:'50%',background:port.bg,color:port.color,fontSize:10,fontWeight:700,flexShrink:0}}>{port.label}</span></td>
+                        <td style={{fontFamily:'monospace',fontSize:11,color:'#475569'}}>{p.codigoProceso||'—'}</td>
+                        <td style={{fontSize:12,fontWeight:500,color:'#1e293b'}}>{p.entidad||'—'}</td>
+                        <td style={{maxWidth:300}}><div style={{fontSize:12,color:'#374151',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:300}} title={p.objeto||''}>{p.objeto||'—'}</div></td>
+                        <td style={{fontSize:12,color:'#374151'}}>{MMAP_MODALIDAD[p.modalidad||'']||p.modalidad||'—'}</td>
+                        <td>{pc2?<span style={{fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:20,background:pc2.bg,color:pc2.color,whiteSpace:'nowrap'}}>{pc2.label}</span>:<span style={{color:'#94a3b8'}}>—</span>}</td>
+                        <td style={{fontSize:12,color:'#64748b'}}>{p.departamento?.split(':')[0]?.trim()||'—'}</td>
+                        <td style={{fontSize:12,fontWeight:600,color:'#15803d',whiteSpace:'nowrap'}}>{fmtV(p.valor)}</td>
+                        <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{fmtFechaCorta(p.fechaPublicacion)}</td>
+                        <td style={{textAlign:'center' as const}}>
+                          <button onClick={()=>setDetalle(p)} title="Ver detalle y gestionar"
+                            style={{width:30,height:30,borderRadius:8,border:'1.5px solid #D0E4F3',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#1E5799',margin:'0 auto',transition:'all .15s'}}
+                            onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#EAF2FB';(e.currentTarget as HTMLButtonElement).style.borderColor='#1E5799';}}
+                            onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';(e.currentTarget as HTMLButtonElement).style.borderColor='#D0E4F3';}}>
+                            <svg fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" style={{width:15,height:15}}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="pagination-bar">
+              <span>{total>0?`${(pagina-1)*LIMIT+1}–${Math.min(pagina*LIMIT,total)} de ${total.toLocaleString('es-CO')}`:'0 resultados'}</span>
+              <div className="pages">
+                <button className="page-btn" onClick={()=>{setPagina(p=>p-1);cargar(pagina-1);}} disabled={pagina<=1||cargando}>‹</button>
+                {pagesArr.map((n,i)=>n===-1?<span key={`el${i}`} style={{padding:'0 3px',color:'#9ca3af',fontSize:12}}>…</span>:<button key={n} className={`page-btn${n===pagina?' active':''}`} onClick={()=>{if(n!==pagina){setPagina(n);cargar(n);}}} disabled={cargando}>{n}</button>)}
+                <button className="page-btn" onClick={()=>{setPagina(p=>p+1);cargar(pagina+1);}} disabled={pagina>=totalPages||cargando}>›</button>
+              </div>
+            </div>
+          </div>
+      )}
+    </div>
+  </>);
+}
+
 function Placeholder({nombre}:{nombre:string}){return<div className="content"><div style={{background:'white',border:'1px solid #e5e7eb',borderRadius:8,padding:22}}><h2 style={{margin:'0 0 8px',fontSize:18,color:'#1f2937'}}>{nombre}</h2><p style={{margin:0,color:'#6b7280',fontSize:13}}>Módulo en construcción.</p></div></div>;}
 
 /* ══════════════════════════════════════════════════════════════
@@ -1094,19 +1828,22 @@ function Placeholder({nombre}:{nombre:string}){return<div className="content"><d
 ══════════════════════════════════════════════════════════════ */
 export default function LicycolbaPage(){
   const [sesionCargada,setSesionCargada]=useState(false);const[sesion,setSesion]=useState<Sesion|null>(null);
-  const [collapsed,setCollapsed]=useState(false);const[activeModule,setActiveModule]=useState('busquedaFinal');const[openAccordion,setOpenAccordion]=useState<string|null>(null);
+  const [collapsed,setCollapsed]=useState(false);const[activeModule,setActiveModule]=useState('procesosNuevos');const[openAccordion,setOpenAccordion]=useState<string|null>('busqueda');
   useEffect(()=>{const raw=sessionStorage.getItem('licycolba_sesion');if(raw){try{setSesion(JSON.parse(raw));}catch{setSesion(null);}}setSesionCargada(true);},[]);
   const borrarSesion=()=>{sessionStorage.removeItem('licycolba_sesion');setSesion(null);};
   const handleLogin=(s:Sesion)=>{sessionStorage.setItem('licycolba_sesion',JSON.stringify(s));setSesion(s);};
   const handleSesionActualizada=(s:Sesion)=>{sessionStorage.setItem('licycolba_sesion',JSON.stringify(s));setSesion(s);};
-  const handleAccordionToggle=(key:string)=>{setOpenAccordion(prev=>prev===key?null:key);setActiveModule(key);};
+  const handleAccordionToggle=(key:string)=>{setOpenAccordion(prev=>prev===key?null:key);};
   if(!sesionCargada)return null;
   if(!sesion)return<PantallaLogin onLogin={handleLogin}/>;
   const renderContent=()=>{
     switch(activeModule){
-      case 'busquedaFinal':         return<ModuloBusquedaFinal onModuleChange={setActiveModule} sesion={sesion}/>;
+      case 'procesosNuevos':        return<ModuloProcesoNuevos sesion={sesion} onModuleChange={setActiveModule}/>;
+      case 'busquedaFinal':         return<ModuloBusquedaFinal onModuleChange={setActiveModule} sesion={sesion}/>
       case 'solicitudesAbiertas':   return<ModuloSolicitudesAbiertas sesion={sesion}/>;
-      case 'solicitudesRechazadas': return<Placeholder nombre="Solicitudes rechazadas"/>;
+      case 'solicitudesComercial':   return<ModuloSolicitudesComercial sesion={sesion}/>;
+      case 'solicitudesEspecializada': return<ModuloSolicitudesEspecializada sesion={sesion}/>;
+      case 'solicitudesRechazadas': return<ModuloSolicitudesRechazadas sesion={sesion}/>
       case 'solicitudesEliminadas': return<ModuloSolicitudesEliminadas/>;
       case 'solicitudesTodas':      return<Placeholder nombre="Todas las solicitudes"/>;
       case 'usuarios':              return<ModuloUsuarios sesion={sesion} onSesionActualizada={handleSesionActualizada}/>;

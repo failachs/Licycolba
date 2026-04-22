@@ -178,6 +178,35 @@ model ProcesoSnapshotSecop {
   @@index([creadoEn])
 }
 
+// ── NUEVO: Registro de procesos detectados por primera vez ──
+model ProcesoNuevo {
+  id               Int       @id @default(autoincrement())
+  procesoId        Int?
+  sourceKey        String    @unique
+  codigoProceso    String?
+  nombre           String?
+  entidad          String?
+  objeto           String?
+  fuente           String?
+  aliasFuente      String?
+  modalidad        String?
+  perfil           String?
+  departamento     String?
+  estadoFuente     String?
+  fechaPublicacion DateTime?
+  fechaVencimiento DateTime?
+  valor            Float?
+  linkDetalle      String?
+  linkSecop        String?
+  linkSecopReg     String?
+  fechaDeteccion   DateTime  @default(now())
+
+  @@index([fechaDeteccion])
+  @@index([perfil])
+  @@index([aliasFuente])
+  @@index([codigoProceso])
+}
+
 model Solicitud {
   id               Int       @id @default(autoincrement())
   procesoId        Int?

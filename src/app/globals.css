@@ -35,18 +35,17 @@
 
 html,
 body {
-  min-height: 100%;
+  height: 100%;
   font-family: var(--font);
   font-size: 13px;
   color: var(--text);
   background: var(--bg);
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;   /* ← página principal NO hace scroll */
 }
 
 .app {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;      /* ← altura fija, no mínima */
   overflow: hidden;
 }
 
@@ -173,9 +172,25 @@ body {
 /* ══════════════════════════════════════════════
    MAIN
 ══════════════════════════════════════════════ */
-.main { flex: 1; display: flex; flex-direction: column;min-height: 0; overflow: hidden; background: #f0f2f5; }
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: #f0f2f5;
+}
 
-.content { flex: 1;min-height: 0; overflow-y: auto;overflow-x: hidden; display: flex; flex-direction: column; padding: 12px 16px; gap: 10px; }
+.content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px;
+  gap: 10px;
+}
 
 /* ══════════════════════════════════════════════
    PAGE HEADER

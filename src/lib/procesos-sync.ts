@@ -16,6 +16,7 @@ export interface SyncMetrics {
   creados: number;
   actualizados: number;
   ignorados: number;
+  nuevosRegistrados: number;
   errores: string[];
   duracionMs: number;
 }
@@ -125,6 +126,7 @@ export async function sincronizarProcesos(params?: {
     creados: 0,
     actualizados: 0,
     ignorados: 0,
+    nuevosRegistrados: 0,
     errores: [],
     duracionMs: 0,
   };
@@ -242,19 +244,63 @@ export async function sincronizarProcesos(params?: {
         };
 
         if (!existing) {
-          await prisma.proceso.create({ data });
+          // ── Proceso nuevo: crear en tabla principal ──────────────────
+          const creado = await prisma.proceso.create({ data });
           metrics.creados++;
+
+          // ── Registrar en ProcesoNuevo (sin duplicados por sourceKey) ──
+          try {
+            await prisma.procesoNuevo.upsert({
+              where: { sourceKey },
+              // Si ya existe un registro previo con este sourceKey
+              // (edge case: proceso borrado y re-detectado), no sobreescribir
+              // la fechaDeteccion original — se preserva la primera detección.
+              update: {},
+              create: {
+                procesoId:        creado.id,
+                sourceKey,
+                codigoProceso:    data.codigoProceso,
+                nombre:           data.nombre,
+                entidad:          data.entidad,
+                objeto:           data.objeto,
+                fuente:           data.fuente,
+                aliasFuente:      data.aliasFuente,
+                modalidad:        data.modalidad,
+                perfil:           data.perfil,
+                departamento:     data.departamento,
+                estadoFuente:     data.estadoFuente,
+                fechaPublicacion: data.fechaPublicacion,
+                fechaVencimiento: data.fechaVencimiento,
+                valor:            data.valor,
+                linkDetalle:      data.linkDetalle,
+                linkSecop:        data.linkSecop,
+                linkSecopReg:     data.linkSecopReg,
+                fechaDeteccion:   new Date(), // momento exacto de detección
+              },
+            });
+            metrics.nuevosRegistrados++;
+          } catch (errNuevo) {
+            // No interrumpir el sync si falla solo el registro auxiliar
+            const msg = `ProcesoNuevo upsert (${sourceKey}): ${errNuevo instanceof Error ? errNuevo.message : String(errNuevo)}`;
+            metrics.errores.push(msg);
+            console.error('[sync][ProcesoNuevo]', msg);
+          }
+
         } else if (existing.hashContenido !== hashContenido) {
+          // ── Proceso existente con cambios: actualizar tabla principal ──
           await prisma.proceso.update({
             where: { id: existing.id },
             data,
           });
           metrics.actualizados++;
+
         } else {
+          // ── Sin cambios: solo actualizar timestamp de sync ──
           await prisma.proceso.update({
             where: { id: existing.id },
             data: { lastSyncedAt: new Date() },
           });
+          metrics.ignorados++;
         }
       } catch (err) {
         const msg = `Persistencia proceso: ${err instanceof Error ? err.message : String(err)}`;
