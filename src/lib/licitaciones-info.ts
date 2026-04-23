@@ -94,9 +94,11 @@ function cfg() {
   const base     = process.env.LICI_INFO_BASE_URL?.replace(/\/$/, '');
   const email    = process.env.LICI_INFO_EMAIL;
   const password = process.env.LICI_INFO_PASSWORD;
+
   if (!base || !email || !password) {
     throw new Error('Variables faltantes: LICI_INFO_BASE_URL, LICI_INFO_EMAIL, LICI_INFO_PASSWORD');
   }
+
   return { base, email, password };
 }
 
@@ -415,16 +417,18 @@ function collectCandidateUrls(p: LiciProcesoRaw): string[] {
 
 /**
  * Prioridad:
- * 1) SECOP I directo
+ * 1) SECOP I directo real
  * 2) SECOP II detalle real (OpportunityDetail)
- * 3) Portal oficial privado / fuente originadora (cualquier dominio no-licitaciones.info y no-buscador SECOP II)
- * 4) SECOP I construido por código, si aplica
- * 5) SECOP II búsqueda, solo como fallback
- * 6) licitaciones.info, solo como fallback final
- * 7) cualquier otro candidato no vacío
+ * 3) Portal oficial privado / fuente originadora
+ * 4) SECOP II búsqueda, solo como fallback
+ * 5) licitaciones.info, solo como fallback final
+ * 6) cualquier otro candidato no vacío
+ *
+ * IMPORTANTE:
+ * Para SECOP I NO se construye el link usando CodigoProceso,
+ * porque CodigoProceso no siempre coincide con numConstancia.
  */
 function resolverLinkDetalle(p: LiciProcesoRaw): string {
-  const codigo = String(p['CodigoProceso'] ?? '').trim();
   const alias  = String(p['alias_fuente'] ?? '').toUpperCase();
   const fuente = String(p['nombre_fuente'] ?? '').toLowerCase();
 
@@ -440,12 +444,6 @@ function resolverLinkDetalle(p: LiciProcesoRaw): string {
     (u) => !isLicitacionesInfoUrl(u) && !isSecop2SearchUrl(u)
   );
   if (portalPrivadoOficial) return portalPrivadoOficial;
-
-  if (alias === 'S1' || fuente.includes('secop i') || fuente.includes('secop1')) {
-    if (codigo) {
-      return `https://www.contratos.gov.co/consultas/detalleProceso.do?numConstancia=${encodeURIComponent(codigo)}`;
-    }
-  }
 
   if (alias === 'S2' || fuente.includes('secop ii') || fuente.includes('secop2')) {
     const secop2Busqueda = candidates.find(isSecop2SearchUrl);
