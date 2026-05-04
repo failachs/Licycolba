@@ -43,6 +43,8 @@ type CronogramaSync = {
   fecha: string;
 };
 
+type TipoDocumentoSync = 'base' | 'adenda';
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 function hashProceso(p: ReturnType<typeof normalizarProceso>): string {
@@ -87,12 +89,41 @@ function extraerTotal(resp: Record<string, unknown>, fallback: number): number {
   return fallback;
 }
 
+/**
+ * Convierte fechas de Licitaciones.Info en Date sin desplazar horas por zona local.
+ * Evita falsos positivos entre timestamp without time zone de PostgreSQL y fechas de API.
+ */
 function parseFecha(fecha?: string | null): Date | null {
   if (!fecha) return null;
 
-  const parsed = new Date(String(fecha).replace(' ', 'T'));
+  const texto = String(fecha).trim();
+  if (!texto) return null;
 
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  const normalizado = texto.replace(' ', 'T');
+
+  const match = normalizado.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?/
+  );
+
+  if (match) {
+    const [, y, m, d, hh = '00', mm = '00', ss = '00'] = match;
+
+    const parsed = new Date(
+      Date.UTC(
+        Number(y),
+        Number(m) - 1,
+        Number(d),
+        Number(hh),
+        Number(mm),
+        Number(ss)
+      )
+    );
+
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const fallback = new Date(normalizado);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
 }
 
 function parseValor(valor: unknown): number | null {
@@ -141,9 +172,7 @@ function resolverCodigoProceso(params: {
 
   if (codigo) return codigo;
 
-  if (alias === 'NC' && nombre) {
-    return nombre;
-  }
+  if (alias === 'NC' && nombre) return nombre;
 
   return null;
 }
@@ -202,9 +231,10 @@ function deduplicarDocumentos(documentos: DocumentoSync[]): DocumentoSync[] {
     const keyNombre = normalizarTextoKey(nombre);
     const key = keyUrl ? `url:${keyUrl.toLowerCase()}` : `nombre:${keyNombre}`;
 
-    if (!key || vistos.has(key)) continue;
+    if (vistos.has(key)) continue;
 
     vistos.add(key);
+
     resultado.push({
       nombre: nombre || 'Sin nombre',
       ruta,
@@ -232,6 +262,7 @@ function deduplicarCronogramas(cronogramas: CronogramaSync[]): CronogramaSync[] 
     if (vistos.has(key)) continue;
 
     vistos.add(key);
+
     resultado.push({
       nombre: nombre || 'Etapa sin nombre',
       fecha,
@@ -274,7 +305,8 @@ async function sincronizarDocumentos(
   entidad: string | null,
   perfil: string | null,
   sourceKey: string,
-  documentos: DocumentoSync[]
+  documentos: DocumentoSync[],
+  tipoDocumentoNuevo: TipoDocumentoSync
 ): Promise<number> {
   const documentosNormalizados = deduplicarDocumentos(documentos);
 
@@ -313,6 +345,7 @@ async function sincronizarDocumentos(
           procesoId,
           nombre: nombre || 'Sin nombre',
           urlDocumento: url || null,
+          tipoDocumento: tipoDocumentoNuevo,
           fechaDetectado: new Date(),
         },
       });
@@ -320,25 +353,28 @@ async function sincronizarDocumentos(
       keysExistentes.add(key);
       nuevos++;
 
-      console.log('[sync] documento nuevo', codigoProceso, nombre);
+      if (tipoDocumentoNuevo === 'adenda') {
+        console.log('[sync] adenda detectada', codigoProceso, nombre);
 
-      await prisma.notificacion.create({
-        data: {
-          tipo: 'documento_nuevo',
-          titulo: 'Nuevo documento detectado',
-          descripcion: `Se detectó un nuevo documento en el proceso ${codigoProceso ?? '—'}: ${nombre}.`,
-          codigoProceso,
-          procesoId,
-          entidad,
-          perfil,
-          datos: {
-            sourceKey,
-            documentoId: nuevo.id,
-            nombreDocumento: nombre,
-            urlDocumento: url || null,
+        await prisma.notificacion.create({
+          data: {
+            tipo: 'documento_nuevo',
+            titulo: 'Nueva adenda detectada',
+            descripcion: `Se detectó un nuevo documento/adenda en el proceso ${codigoProceso ?? '—'}: ${nombre}.`,
+            codigoProceso,
+            procesoId,
+            entidad,
+            perfil,
+            datos: {
+              sourceKey,
+              documentoId: nuevo.id,
+              nombreDocumento: nombre,
+              urlDocumento: url || null,
+              tipoDocumento: 'adenda',
+            },
           },
-        },
-      });
+        });
+      }
     } catch (err) {
       console.warn(
         '[sync] error documento',
@@ -351,6 +387,7 @@ async function sincronizarDocumentos(
 
   if (nuevos > 0) {
     console.log('[sync] documentos sincronizados', codigoProceso, {
+      tipoDocumentoNuevo,
       recibidos: documentos.length,
       normalizados: documentosNormalizados.length,
       nuevos,
@@ -583,16 +620,17 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
       },
     });
 
-    const docsNuevos = await sincronizarDocumentos(
+    const docsInsertados = await sincronizarDocumentos(
       creado.id,
       codigoProceso,
       entidad,
       perfil,
       sourceKey,
-      documentosNormalizados
+      documentosNormalizados,
+      'base'
     );
 
-    metrics.documentosNuevos += docsNuevos;
+    metrics.documentosNuevos += docsInsertados;
 
     if (cronogramasNormalizados.length > 0) {
       await prisma.procesoCronogramaSecop.createMany({
@@ -662,13 +700,35 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
       });
     }
 
-    const fechaAnterior = existing.fechaVencimiento?.toISOString() ?? null;
-    const fechaNueva = dataBase.fechaVencimiento?.toISOString() ?? null;
+    const fechaAnteriorDate = existing.fechaVencimiento ?? null;
+    const fechaNuevaDate = dataBase.fechaVencimiento ?? null;
 
-    if (fechaAnterior !== fechaNueva) {
+    const fechaAnteriorTime = fechaAnteriorDate?.getTime() ?? null;
+    const fechaNuevaTime = fechaNuevaDate?.getTime() ?? null;
+
+    const hayCambioFechaCierre =
+      fechaAnteriorTime !== null &&
+      fechaNuevaTime !== null &&
+      fechaAnteriorTime !== fechaNuevaTime;
+
+    if (hayCambioFechaCierre) {
       metrics.cambiosFechaCierre++;
 
-      console.log('[sync] cambio fecha cierre', codigoProceso, fechaAnterior, fechaNueva);
+      console.log(
+        '[sync] cambio fecha cierre',
+        codigoProceso,
+        fechaAnteriorDate?.toISOString() ?? null,
+        fechaNuevaDate?.toISOString() ?? null
+      );
+
+      await prisma.proceso.update({
+        where: { id: existing.id },
+        data: {
+          fechaVencimientoAnterior: fechaAnteriorDate,
+          fechaCambioFechaCierre: new Date(),
+          tieneCambioFechaCierre: true,
+        },
+      });
 
       await prisma.notificacion.create({
         data: {
@@ -681,8 +741,8 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
           perfil,
           datos: {
             sourceKey,
-            fechaAnterior,
-            fechaNueva,
+            fechaAnterior: fechaAnteriorDate?.toISOString() ?? null,
+            fechaNueva: fechaNuevaDate?.toISOString() ?? null,
           },
         },
       });
@@ -714,16 +774,17 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
       });
     }
 
-    const docsNuevos = await sincronizarDocumentos(
+    const docsInsertados = await sincronizarDocumentos(
       existing.id,
       codigoProceso,
       entidad,
       perfil,
       sourceKey,
-      documentosNormalizados
+      documentosNormalizados,
+      'adenda'
     );
 
-    metrics.documentosNuevos += docsNuevos;
+    metrics.documentosNuevos += docsInsertados;
 
     const cronoCambio = await sincronizarCronograma(
       existing.id,
@@ -762,16 +823,17 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
     codigoNormalizado && codigoExistente !== codigoNormalizado
   );
 
-  const docsNuevos = await sincronizarDocumentos(
+  const docsInsertados = await sincronizarDocumentos(
     existing.id,
     codigoProceso,
     entidad,
     perfil,
     sourceKey,
-    documentosNormalizados
+    documentosNormalizados,
+    'adenda'
   );
 
-  metrics.documentosNuevos += docsNuevos;
+  metrics.documentosNuevos += docsInsertados;
 
   const cronoCambio = await sincronizarCronograma(
     existing.id,
@@ -781,6 +843,21 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
 
   if (cronoCambio) {
     metrics.cronogramasActualizados++;
+
+    await prisma.notificacion.create({
+      data: {
+        tipo: 'cambio_cronograma',
+        titulo: 'Cambio en cronograma',
+        descripcion: `El proceso ${codigoProceso ?? '—'} actualizó su cronograma.`,
+        codigoProceso,
+        procesoId: existing.id,
+        entidad,
+        perfil,
+        datos: {
+          sourceKey,
+        },
+      },
+    });
   }
 
   await prisma.proceso.update({
@@ -822,7 +899,7 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
 
   await recalcularTotalesProceso(existing.id);
 
-  if (docsNuevos > 0 || cronoCambio) {
+  if (docsInsertados > 0 || cronoCambio) {
     metrics.actualizados++;
     return;
   }

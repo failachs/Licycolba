@@ -91,6 +91,12 @@ model Proceso {
   estadoFuente     String?
   fechaPublicacion DateTime?
   fechaVencimiento DateTime?
+
+  // Control de cambios de fecha de cierre
+  fechaVencimientoAnterior DateTime?
+  fechaCambioFechaCierre   DateTime?
+  tieneCambioFechaCierre   Boolean   @default(false)
+
   valor            Float?
   linkDetalle      String?
   linkSecop        String?
@@ -116,6 +122,7 @@ model Proceso {
   @@index([estadoFuente])
   @@index([fechaPublicacion])
   @@index([fechaVencimiento])
+  @@index([tieneCambioFechaCierre])
 }
 
 model ProcesoDetalleSecop {
@@ -179,7 +186,7 @@ model ProcesoDocumentoSecop {
 
   nombre         String
   urlDocumento   String?
-  tipoDocumento  String?
+  tipoDocumento  String? // base | adenda
   extension      String?
   hashArchivo    String?
   rutaLocal      String?
@@ -194,6 +201,7 @@ model ProcesoDocumentoSecop {
 
   @@index([procesoId])
   @@index([nombre])
+  @@index([tipoDocumento])
   @@index([descargado])
   @@index([procesado])
 }
