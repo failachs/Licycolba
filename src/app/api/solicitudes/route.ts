@@ -746,7 +746,7 @@ export async function DELETE(req: NextRequest) {
     }
 
     await prisma.deletedSolicitud.createMany({
-      data: registros.map((s) => ({
+      data: (registros as any[]).map((s) => ({
         originalId: s.id,
 
         procesoId: s.procesoId,

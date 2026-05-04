@@ -1,16 +1,136 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import LicyTopbar from "@/components/licycolba/LicyTopbar";
-import ProcesosCardsView from "@/components/licycolba/ProcesosCardsView";
-import "@/components/licycolba/procesos-cards.css";
+import LicyTopbar from '@/components/licycolba/LicyTopbar';
+import ProcesosCardsView from '@/components/licycolba/ProcesosCardsView';
+import '@/components/licycolba/procesos-cards.css';
+import { puede, puedeVerModulo, esSoloLectura, normalizarRol } from '@/lib/licycolba/permisos';
+
+
+/* =========================================================
+   Configuración base del módulo
+========================================================= */
 
 const DRAFT_KEY = 'licycolba_draft_solicitud';
 
-/* ══════════════════════════════════════════════════════════════
-   TIPOS
-══════════════════════════════════════════════════════════════ */
-interface Sesion { usuario:string; cargo:string; email:string; entidadGrupo:string; rol:string; }
+/* =========================================================
+   Helpers globales de normalización segura
+========================================================= */
+
+function safeString(value: unknown, fallback = ''): string {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value);
+  return fallback;
+}
+
+function safeNumber(value: unknown, fallback = 0): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/[^\d.-]/g, '');
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  return fallback;
+}
+
+function safeBool(value: unknown, fallback = false): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'sí', 'si', 'yes'].includes(normalized)) return true;
+    if (['false', '0', 'no'].includes(normalized)) return false;
+  }
+  if (typeof value === 'number') return value !== 0;
+  return fallback;
+}
+
+function safeRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function safeArray<T = unknown>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function getRecordValue(record: Record<string, unknown> | null | undefined, key: string, fallback: unknown = ''): unknown {
+  if (!record) return fallback;
+  return Object.prototype.hasOwnProperty.call(record, key) ? record[key] : fallback;
+}
+
+function safeDate(value: unknown, fallback = ''): string {
+  const raw = safeString(value);
+  if (!raw) return fallback;
+  const date = new Date(raw.replace(' ', 'T'));
+  if (Number.isNaN(date.getTime())) return raw || fallback;
+  return date.toLocaleDateString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function getWindowXlsx(): XlsxLike | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return (window as Window & { XLSX?: XlsxLike }).XLSX;
+}
+
+/* =========================================================
+   Tipos y contratos internos del módulo
+========================================================= */
+type IndicadorAsignacion = {
+  subcausa: string;
+  valorRequerido: string;
+  valorEvidenciado: string;
+  cumple: string;
+  obs: string;
+};
+
+type DocumentoDinamico = Record<string, unknown>;
+
+type UsuarioActivo = {
+  id: number;
+  usuario: string;
+  cargo: string;
+  entidadGrupo: string;
+  rol?: string;
+  estado?: string;
+  proceso?: string | null;
+};
+
+type UsuarioAsignable = {
+  id: number;
+  usuario: string;
+  cargo: string;
+  entidadGrupo: string;
+  rol: string;
+  estado: string;
+  proceso?: string;
+};
+
+type XlsxWorksheet = Record<string, unknown> & {
+  '!ref'?: string;
+  '!cols'?: Array<{ wch: number }>;
+};
+
+type XlsxLike = {
+  utils: {
+    book_new: () => unknown;
+    aoa_to_sheet: (data: unknown[][]) => XlsxWorksheet;
+    book_append_sheet: (wb: unknown, ws: XlsxWorksheet, name: string) => void;
+    decode_range: (ref: string) => { e: { r: number } };
+    encode_cell: (cell: { r: number; c: number }) => string;
+  };
+  writeFile: (wb: unknown, fileName: string, options?: Record<string, unknown>) => void;
+};
+
+interface Sesion {
+  usuario: string;
+  cargo: string;
+  email: string;
+  entidadGrupo: string;
+  rol: string;
+  [key: string]: string;
+}
+
 interface UserPayload { cedula:string; celular:string; entidadGrupo:string; cargo:string; email:string; usuario:string; rol:string; estado:string; firmaDigital:string; password:string; proceso:string; subproceso:string; uen:string; }
 const PROCESOS_SUBPROCESOS: Record<string, string[]> = {
   'HSEQ': ['Calidad', 'Ambiental', 'SST'],
@@ -43,7 +163,7 @@ interface LiciProceso {
 }
 interface ProcesosApiResponse { ok:boolean; total_resultados_api:number; total_resultados_filtrados:number; total_resultados_entregados:number; procesos:LiciProceso[]; error?:string; }
 
-/* ── SOLICITUD ── */
+/* Solicitudes */
 interface Solicitud {
   id: number;
   procesoId: number | null;
@@ -152,7 +272,7 @@ interface DeletedSolicitud {
 
 interface ExamenMedico { [k:string]:unknown; }
 
-/* ── Flujos stepper ── */
+/* Flujos del stepper */
 interface PasoFlujo { id:string; label:string; terminal:boolean; resultado?:boolean; cierre?:boolean; }
 const FLUJO_LICITACION:PasoFlujo[]=[
   {id:'rev',    label:'En revisión\ncomercial', terminal:false},
@@ -187,7 +307,7 @@ const MMAP_MODALIDAD:Record<string,string>={'1':'Contratación directa','2':'Lic
 const SESSION_KEY='licycolba_sesion';
 const guardarSesion=(s:Sesion)=>{try{sessionStorage.setItem(SESSION_KEY,JSON.stringify(s));}catch{/**/}};
 
-/* ── Colores ── */
+/* Colores y estados visuales */
 const portalColor=(a:string,f:string)=>{const au=a.toUpperCase();const fu=f.toUpperCase();if(au==='S2'||fu.includes('SECOP II'))return{label:'S2',bg:'#1E5799',color:'white'};if(au==='S1'||fu.includes('SECOP I'))return{label:'S1',bg:'#16a34a',color:'white'};return{label:au||'NC',bg:'#0F2040',color:'white'};};
 const portalColorModal=(a:string,f:string,r:string)=>{const au=a.toUpperCase();const fu=f.toUpperCase();if(au==='S2'||fu.includes('SECOP II'))return{short:'S2',label:'SECOP II',bg:'#1E5799',color:'white'};if(au==='S1'||fu.includes('SECOP I'))return{short:'S1',label:'SECOP I',bg:'#16a34a',color:'white'};return{short:au||'NC',label:r||'Otro portal',bg:'#0F2040',color:'white'};};
 const estadoBadgeColor=(e:string)=>{const s=e.toLowerCase();if(s.includes('convocatoria')||s.includes('publicado')||s.includes('abierto')||s.includes('vigente'))return{bg:'#E8F5E9',color:'#1B5E20'};if(s.includes('adjudicado'))return{bg:'#E3F2FD',color:'#0D47A1'};if(s.includes('cerrado')||s.includes('vencido'))return{bg:'#EAF2FB',color:'#1E5799'};if(s.includes('cancelado')||s.includes('desierto'))return{bg:'#FFEBEE',color:'#B71C1C'};if(s.includes('evaluac')||s.includes('selecc'))return{bg:'#FFF8E1',color:'#E65100'};return{bg:'#F1F5F9',color:'#475569'};};
@@ -195,9 +315,9 @@ const estadoModalColor=(e:string)=>{const s=e.toLowerCase();if(s.includes('convo
 const perfilColor=(p:string)=>{const s=p.toLowerCase();if(s.includes('aseo'))return{bg:'#e8edf5',color:'#0d2d5e',label:'Aseocolba'};if(s.includes('vigi'))return{bg:'#fde8eb',color:'#c8102e',label:'Vigicolba'};if(s.includes('tempo'))return{bg:'#e3eef8',color:'#1a5ea8',label:'Tempocolba'};return{bg:'#F1F5F9',color:'#475569',label:p.charAt(0).toUpperCase()+p.slice(1)};};
 const estadoSolicitudColor=(e:string)=>{const s=(e||'').toLowerCase();if(s==='abierta'||s.includes('revisión')||s.includes('revision'))return{bg:'#e0f2fe',color:'#0369a1'};if(s==='asignada')return{bg:'#E8F5E9',color:'#1B5E20'};if(s==='adjudicada'||s==='aceptada')return{bg:'#E3F2FD',color:'#0D47A1'};if(s.includes('no ')|| s==='rechazada')return{bg:'#FFEBEE',color:'#B71C1C'};if(s==='cerrada')return{bg:'#F1F5F9',color:'#475569'};return{bg:'#FFF8E1',color:'#E65100'};};
 
-/* ══════════════════════════════════════════════════════════════
-   ICONOS
-══════════════════════════════════════════════════════════════ */
+/* =========================================================
+   Iconografía interna
+========================================================= */
 const IcoUser=()=>(<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z"/></svg>);
 const IcoLogout=()=>(<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>);
 const IcoDashboard=()=>(<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>);
@@ -231,9 +351,9 @@ const IcoExamenes=()=>(<svg fill="none" stroke="currentColor" strokeWidth={2} vi
 const IcoRestore=()=>(<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M3 12a9 9 0 009 9 9 9 0 006.36-2.64M3 12V6m0 6H9"/><path d="M21 12a9 9 0 00-9-9 9 9 0 00-6.36 2.64"/></svg>);
 const IcoExternalLink=()=>(<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>);
 
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    LOGIN
-══════════════════════════════════════════════════════════════ */
+========================================================= */
 function PantallaLogin({onLogin}:{onLogin:(s:Sesion)=>void}) {
   const [email,setEmail]=useState('');const[password,setPassword]=useState('');const[showPass,setShowPass]=useState(false);const[error,setError]=useState('');const[loading,setLoading]=useState(false);
   const handleSubmit=async(e:React.FormEvent)=>{e.preventDefault();setError('');const em=email.trim().toLowerCase();if(!em||!em.includes('@')){setError('Ingresa un correo válido.');return;}if(!password){setError('La contraseña es obligatoria.');return;}setLoading(true);try{const res=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:em,password})});const data=await res.json();if(!res.ok){setError(data.error??'No se pudo iniciar sesión.');return;}guardarSesion(data as Sesion);onLogin(data as Sesion);}catch{setError('No se pudo conectar.');}finally{setLoading(false);}};
@@ -245,7 +365,7 @@ function PantallaLogin({onLogin}:{onLogin:(s:Sesion)=>void}) {
     </div></div></div>);
     }
 
-/* ── Badge conteo procesos nuevos de hoy ── */
+/* Indicador de procesos nuevos del día */
 function BadgeNuevosHoy(){
   const[count,setCount]=React.useState<number|null>(null);
   const [docVista,setDocVista]=React.useState<'grid'|'list'>('list');
@@ -270,27 +390,157 @@ function BadgeNuevosHoy(){
   );
 }
 
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    SIDEBAR
-══════════════════════════════════════════════════════════════ */
-interface SidebarProps{collapsed:boolean;onToggle:()=>void;activeModule:string;onModuleChange:(m:string)=>void;openAccordion:string|null;onAccordionToggle:(k:string)=>void;sesion:Sesion;onLogout:()=>void;}
+========================================================= */
+interface SidebarProps {
+  collapsed: boolean;
+  onToggle: () => void;
+  activeModule: string;
+  onModuleChange: (module: string) => void;
+  openAccordion: string | null;
+  onAccordionToggle: (key: string) => void;
+  sesion: Sesion;
+  onLogout: () => void;
+}
+
 function Sidebar({collapsed,onToggle,activeModule,onModuleChange,openAccordion,onAccordionToggle,sesion,onLogout}:SidebarProps){
   const ni=(mod:string)=>['nav-item',activeModule===mod?'active':'',openAccordion===mod?'open':''].filter(Boolean).join(' ');
   const solAbiertasModules=['solicitudesComercial','solicitudesEspecializada'];
   const [subOpen,setSubOpen]=React.useState<string|null>(solAbiertasModules.includes(activeModule)?'solicitudesAbiertas':null);
   const toggleSub=(k:string)=>setSubOpen(prev=>prev===k?null:k);
-  return(<aside className={`sidebar${collapsed?' collapsed':''}`}><div className="sidebar-logo" style={{flexShrink:0}}><div className="logo-box"><div className="logo-qs">{ }<img src="https://www.grupocolba.com.co/wp-content/uploads/2021/05/grupocolba-logo.png" alt="Grupo Colba"/></div><div className="logo-version"><strong>LICYCOLBA</strong></div></div><button className="toggle-btn" onClick={onToggle}><IcoChevL/></button></div><div className="sidebar-scroll"><div className="sidebar-user"><IcoUser/><div className="sidebar-user-info"><div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontWeight:500}}>{sesion.usuario.replace(/(?:^|[.\s_-])(\w)/g,(m,c)=>m.replace(c,c.toUpperCase()))}</div><div style={{fontSize:10.5,color:'var(--sidebar-text-dim)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginTop:1}}>{sesion.cargo}</div></div></div><nav className="sidebar-nav"><div className="nav-item" onClick={onLogout}><IcoLogout/><span className="nav-item-text">Cerrar sesión</span></div><div className={ni('dashboard')} onClick={()=>onModuleChange('dashboard')}><IcoDashboard/><span className="nav-item-text">Dashboard</span></div><div className={ni('trm')} onClick={()=>onModuleChange('trm')}><IcoTRM/><span className="nav-item-text">TRM</span></div><div className="section-title">MÓDULOS</div><div className={ni('busqueda')} onClick={()=>onAccordionToggle('busqueda')}><IcoBusqueda/><span className="nav-item-text">Búsqueda de procesos</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className={`sub-item${activeModule==='procesosNuevos'?' active':''}`} onClick={()=>onModuleChange('procesosNuevos')}>Procesos nuevos<BadgeNuevosHoy/></div><div className={`sub-item${activeModule==='busquedaFinal'?' active':''}`} onClick={()=>onModuleChange('busquedaFinal')}>Todos los procesos</div></div><div className={ni('solicitudes')} onClick={()=>onAccordionToggle('solicitudes')}><IcoSolicitudes/><span className="nav-item-text">Solicitudes</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className={`sub-item${['solicitudesComercial','solicitudesEspecializada'].includes(activeModule)?' active':''}`} onClick={()=>toggleSub('solicitudesAbiertas')} style={{display:'flex',alignItems:'center',cursor:'pointer',width:'100%'}}>Solicitudes abiertas<span style={{marginLeft:'auto',display:'inline-flex',alignItems:'center',transform:subOpen==='solicitudesAbiertas'?'rotate(90deg)':'none',transition:'transform .2s',width:16,height:16,opacity:.7}}><IcoChevR/></span></div>{subOpen==='solicitudesAbiertas'&&<div style={{paddingLeft:12}}><div className={`sub-item${activeModule==='solicitudesComercial'?' active':''}`} onClick={()=>onModuleChange('solicitudesComercial')}>Comercial</div><div className={`sub-item${activeModule==='solicitudesEspecializada'?' active':''}`} onClick={()=>onModuleChange('solicitudesEspecializada')}>Especializados</div></div>}<div className={`sub-item${activeModule==='solicitudesRechazadas'?' active':''}`} onClick={()=>onModuleChange('solicitudesRechazadas')}>Solicitudes rechazadas</div><div className={`sub-item${activeModule==='solicitudesEliminadas'?' active':''}`} onClick={()=>onModuleChange('solicitudesEliminadas')}>Solicitudes eliminadas</div><div className={`sub-item${activeModule==='solicitudesTodas'?' active':''}`} onClick={()=>onModuleChange('solicitudesTodas')}>Todas las solicitudes</div></div><div className={ni('asignaciones')} onClick={()=>onAccordionToggle('asignaciones')}><IcoAsignaciones/><span className="nav-item-text">Asignaciones</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className="sub-item" onClick={()=>onModuleChange('asignacionesPendientes')}>Asignaciones pendientes</div><div className="sub-item" onClick={()=>onModuleChange('asignacionesTerminadas')}>Asignaciones terminadas</div></div><div className={ni('cronogramas')} onClick={()=>onAccordionToggle('cronogramas')}><IcoCronogramas/><span className="nav-item-text" style={{opacity:0.5}}>Cronogramas</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className="sub-item">Todos los cronogramas</div></div><div className={ni('maestroDeDocumentos')} onClick={()=>onModuleChange('maestroDeDocumentos')}><IcoMaestro/><span className="nav-item-text">Maestro de documentos</span></div><div className={ni('estructuraDeCostos')} onClick={()=>onModuleChange('estructuraDeCostos')}><IcoEstructura/><span className="nav-item-text">Estructura de costos</span></div><div className={ni('examenesMedicos')} onClick={()=>onModuleChange('examenesMedicos')}><IcoExamenes/><span className="nav-item-text">Exámenes médicos</span></div><div className={ni('usuarios')} onClick={()=>onAccordionToggle('usuarios')}><IcoUsuarios/><span className="nav-item-text">Usuarios y perfiles</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className={`sub-item${activeModule==='usuarios'?' active':''}`} onClick={()=>onModuleChange('usuarios')}>Usuarios</div><div className={`sub-item${activeModule==='perfiles'?' active':''}`} onClick={()=>onModuleChange('perfiles')}>Perfiles</div><div className={`sub-item${activeModule==='usuariosEliminados'?' active':''}`} onClick={()=>onModuleChange('usuariosEliminados')}>Usuarios eliminados</div></div><div className={ni('indicadores')} onClick={()=>onAccordionToggle('indicadores')}><IcoIndicadores/><span className="nav-item-text" style={{opacity:0.5}}>Indicadores</span><span className="nav-arrow"><IcoChevR/></span></div><div className="sub-nav"><div className="sub-item">Panel de indicadores</div></div><div className="section-title">CUENTA</div><div className="nav-item"><IcoConfig/><span className="nav-item-text">Configuración de cuenta</span></div></nav>
-</div>
-<div style={{padding:'12px 14px 16px',borderTop:'1px solid rgba(255,255,255,0.08)',flexShrink:0}}>
-  <img src="/logosempresas.svg" alt="Empresas Grupo Colba" style={{width:'92%',opacity:1,filter:'brightness(0) invert(1) brightness(2)'}}/>
-</div>
-</aside>);
+
+  // ─── Permisos derivados del rol para visibilidad en sidebar ─────────────────
+  const rol=sesion.rol;
+  const verBusqueda          =puedeVerModulo(rol,'busqueda');
+  const verSolicitudes       =puedeVerModulo(rol,'solicitudesComercial');
+  const verAsignaciones      =puedeVerModulo(rol,'asignaciones');
+  const verCronogramas       =puedeVerModulo(rol,'cronogramas');
+  const verDocumentos        =puedeVerModulo(rol,'documentos');
+  const verUsuarios          =puedeVerModulo(rol,'usuarios');
+
+  return(
+    <aside className={`sidebar${collapsed?' collapsed':''}`}>
+      <div className="sidebar-logo" style={{flexShrink:0}}>
+        <div className="logo-box">
+          <div className="logo-qs"><img src="https://www.grupocolba.com.co/wp-content/uploads/2021/05/grupocolba-logo.png" alt="Grupo Colba"/></div>
+          <div className="logo-version"><strong>LICYCOLBA</strong></div>
+        </div>
+        <button className="toggle-btn" onClick={onToggle}><IcoChevL/></button>
+      </div>
+
+      <div className="sidebar-scroll">
+        <div className="sidebar-user">
+          <IcoUser/>
+          <div className="sidebar-user-info">
+            <div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontWeight:500}}>{sesion.usuario.replace(/(?:^|[.\s_-])(\w)/g,(m,c)=>m.replace(c,c.toUpperCase()))}</div>
+            <div style={{fontSize:10.5,color:'var(--sidebar-text-dim)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginTop:1}}>{sesion.cargo}</div>
+          </div>
+        </div>
+
+        <nav className="sidebar-nav">
+          <div className="nav-item" onClick={onLogout}><IcoLogout/><span className="nav-item-text">Cerrar sesión</span></div>
+          <div className={ni('dashboard')} onClick={()=>onModuleChange('dashboard')}><IcoDashboard/><span className="nav-item-text">Dashboard</span></div>
+          <div className={ni('trm')} onClick={()=>onModuleChange('trm')}><IcoTRM/><span className="nav-item-text">TRM</span></div>
+
+          <div className="section-title">MÓDULOS</div>
+
+          {/* ── Búsqueda de procesos ── */}
+          {verBusqueda&&<>
+            <div className={ni('busqueda')} onClick={()=>onAccordionToggle('busqueda')}>
+              <IcoBusqueda/><span className="nav-item-text">Búsqueda de procesos</span><span className="nav-arrow"><IcoChevR/></span>
+            </div>
+            <div className="sub-nav">
+              <div className={`sub-item${activeModule==='procesosNuevos'?' active':''}`} onClick={()=>onModuleChange('procesosNuevos')}>Procesos nuevos<BadgeNuevosHoy/></div>
+              <div className={`sub-item${activeModule==='busquedaFinal'?' active':''}`} onClick={()=>onModuleChange('busquedaFinal')}>Todos los procesos</div>
+            </div>
+          </>}
+
+          {/* ── Solicitudes ── */}
+          {verSolicitudes&&<>
+            <div className={ni('solicitudes')} onClick={()=>onAccordionToggle('solicitudes')}>
+              <IcoSolicitudes/><span className="nav-item-text">Solicitudes</span><span className="nav-arrow"><IcoChevR/></span>
+            </div>
+            <div className="sub-nav">
+              <div className={`sub-item${['solicitudesComercial','solicitudesEspecializada'].includes(activeModule)?' active':''}`} onClick={()=>toggleSub('solicitudesAbiertas')} style={{display:'flex',alignItems:'center',cursor:'pointer',width:'100%'}}>
+                Solicitudes abiertas
+                <span style={{marginLeft:'auto',display:'inline-flex',alignItems:'center',transform:subOpen==='solicitudesAbiertas'?'rotate(90deg)':'none',transition:'transform .2s',width:16,height:16,opacity:.7}}><IcoChevR/></span>
+              </div>
+              {subOpen==='solicitudesAbiertas'&&<div style={{paddingLeft:12}}>
+                <div className={`sub-item${activeModule==='solicitudesComercial'?' active':''}`} onClick={()=>onModuleChange('solicitudesComercial')}>Comercial</div>
+                <div className={`sub-item${activeModule==='solicitudesEspecializada'?' active':''}`} onClick={()=>onModuleChange('solicitudesEspecializada')}>Especializados</div>
+              </div>}
+              <div className={`sub-item${activeModule==='solicitudesRechazadas'?' active':''}`} onClick={()=>onModuleChange('solicitudesRechazadas')}>Solicitudes rechazadas</div>
+              <div className={`sub-item${activeModule==='solicitudesEliminadas'?' active':''}`} onClick={()=>onModuleChange('solicitudesEliminadas')}>Solicitudes eliminadas</div>
+              <div className={`sub-item${activeModule==='solicitudesTodas'?' active':''}`} onClick={()=>onModuleChange('solicitudesTodas')}>Todas las solicitudes</div>
+            </div>
+          </>}
+
+          {/* ── Asignaciones ── */}
+          {verAsignaciones&&<>
+            <div className={ni('asignaciones')} onClick={()=>onAccordionToggle('asignaciones')}>
+              <IcoAsignaciones/><span className="nav-item-text">Asignaciones</span><span className="nav-arrow"><IcoChevR/></span>
+            </div>
+            <div className="sub-nav">
+              <div className={`sub-item${activeModule==='asignacionesPendientes'?' active':''}`} onClick={()=>onModuleChange('asignacionesPendientes')}>Asignaciones pendientes</div>
+              <div className={`sub-item${activeModule==='asignacionesCerradas'?' active':''}`} onClick={()=>onModuleChange('asignacionesCerradas')}>Asignaciones cerradas</div>
+            </div>
+          </>}
+
+          {/* ── Cronogramas ── */}
+          {verCronogramas&&<>
+            <div className={ni('cronogramas')} onClick={()=>onAccordionToggle('cronogramas')}>
+              <IcoCronogramas/><span className="nav-item-text" style={{opacity:0.5}}>Cronogramas</span><span className="nav-arrow"><IcoChevR/></span>
+            </div>
+            <div className="sub-nav">
+              <div className="sub-item">Todos los cronogramas</div>
+            </div>
+          </>}
+
+          {/* ── Maestro de documentos — visible para todos ── */}
+          <div className={ni('maestroDeDocumentos')} onClick={()=>onModuleChange('maestroDeDocumentos')}><IcoMaestro/><span className="nav-item-text">Maestro de documentos</span></div>
+
+          {/* ── Estructura de costos — visible para todos ── */}
+          <div className={ni('estructuraDeCostos')} onClick={()=>onModuleChange('estructuraDeCostos')}><IcoEstructura/><span className="nav-item-text">Estructura de costos</span></div>
+
+          {/* ── Exámenes médicos — visible para todos ── */}
+          <div className={ni('examenesMedicos')} onClick={()=>onModuleChange('examenesMedicos')}><IcoExamenes/><span className="nav-item-text">Exámenes médicos</span></div>
+
+          {/* ── Usuarios y perfiles — solo roles con permiso ── */}
+          {verUsuarios&&<>
+            <div className={ni('usuarios')} onClick={()=>onAccordionToggle('usuarios')}>
+              <IcoUsuarios/><span className="nav-item-text">Usuarios y perfiles</span><span className="nav-arrow"><IcoChevR/></span>
+            </div>
+            <div className="sub-nav">
+              <div className={`sub-item${activeModule==='usuarios'?' active':''}`} onClick={()=>onModuleChange('usuarios')}>Usuarios</div>
+              <div className={`sub-item${activeModule==='perfiles'?' active':''}`} onClick={()=>onModuleChange('perfiles')}>Perfiles</div>
+              <div className={`sub-item${activeModule==='usuariosEliminados'?' active':''}`} onClick={()=>onModuleChange('usuariosEliminados')}>Usuarios eliminados</div>
+            </div>
+          </>}
+
+          {/* ── Indicadores ── */}
+          <div className={ni('indicadores')} onClick={()=>onAccordionToggle('indicadores')}>
+            <IcoIndicadores/><span className="nav-item-text" style={{opacity:0.5}}>Indicadores</span><span className="nav-arrow"><IcoChevR/></span>
+          </div>
+          <div className="sub-nav">
+            <div className="sub-item">Panel de indicadores</div>
+          </div>
+
+          <div className="section-title">CUENTA</div>
+          <div className="nav-item"><IcoConfig/><span className="nav-item-text">Configuración de cuenta</span></div>
+        </nav>
+      </div>
+
+      <div style={{padding:'12px 14px 16px',borderTop:'1px solid rgba(255,255,255,0.08)',flexShrink:0}}>
+        <img src="/logosempresas.svg" alt="Empresas Grupo Colba" style={{width:'92%',opacity:1,filter:'brightness(0) invert(1) brightness(2)'}}/>
+      </div>
+    </aside>
+  );
 }
 
-
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    MODALES USUARIOS
-══════════════════════════════════════════════════════════════ */
+========================================================= */
 function ModalNuevoUsuario({onClose,onCreado}:{onClose:()=>void;onCreado:()=>void}){
   const [form,setForm]=useState<UserPayload>({...PAYLOAD_VACIO});
   const [showPass,setShowPass]=useState(false);
@@ -411,7 +661,16 @@ function ModalNuevoUsuario({onClose,onCreado}:{onClose:()=>void;onCreado:()=>voi
             </div>
             <div className="form-field">
               <label>Rol *</label>
-              <input style={iS} type="text" autoComplete="off" value={form.rol} onChange={e=>set('rol',e.target.value)}/>
+              <select style={iS} value={form.rol} onChange={e=>set('rol',e.target.value)}>
+                <option value="">— Seleccione rol —</option>
+                <option>Administrador</option>
+                <option>Gerencia</option>
+                <option>Analista Mercadeo</option>
+                <option>Director Comercial</option>
+                <option>Coordinador Comercial</option>
+                <option>Analista Comercial</option>
+                <option>Usuario Final</option>
+              </select>
             </div>
           </div>
 
@@ -568,7 +827,16 @@ function ModalEditarUsuario({usuario:u,onClose,onGuardado}:{usuario:User;onClose
             </div>
             <div className="form-field">
               <label>Rol *</label>
-              <input style={iS} type="text" value={form.rol} onChange={e=>set('rol',e.target.value)}/>
+              <select style={iS} value={form.rol} onChange={e=>set('rol',e.target.value)}>
+                <option value="">— Seleccione rol —</option>
+                <option>Administrador</option>
+                <option>Gerencia</option>
+                <option>Analista Mercadeo</option>
+                <option>Director Comercial</option>
+                <option>Coordinador Comercial</option>
+                <option>Analista Comercial</option>
+                <option>Usuario Final</option>
+              </select>
             </div>
           </div>
 
@@ -605,9 +873,9 @@ function ModalConfirmarEliminarUsuario({usuarios:sel,onClose,onEliminado,sesion}
   return(<div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}><div className="modal-card" style={{maxWidth:420}}><div className="modal-header"><div style={{display:'flex',alignItems:'center',gap:8,color:'#ef4444'}}><IcoTrash/><h3 style={{margin:0,fontSize:15,fontWeight:600,color:'#111827'}}>Confirmar eliminación</h3></div><button className="modal-close-btn" onClick={onClose}><IcoClose/></button></div>{error&&<div className="modal-error">{error}</div>}<div className="modal-body"><p style={{fontSize:13,color:'#374151',margin:0}}>Vas a eliminar <strong>{sel.length} usuario{sel.length>1?'s':''}</strong>:</p><ul style={{margin:'10px 0 0',paddingLeft:18,fontSize:12,color:'#6b7280'}}>{sel.map(u=><li key={u.id}>{u.usuario} — {u.email}</li>)}</ul><p style={{fontSize:12,color:'#ef4444',marginTop:12,fontWeight:500}}>Esta acción no se puede deshacer.</p></div><div className="modal-actions"><button className="modal-btn-cancel" onClick={onClose} disabled={eliminando}>Cancelar</button><button onClick={handleEliminar} disabled={eliminando} style={{height:34,padding:'0 18px',border:'none',borderRadius:6,background:'#ef4444',color:'white',fontFamily:'var(--font)',fontSize:12,fontWeight:600,cursor:'pointer'}}>{eliminando?'Eliminando…':`Eliminar ${sel.length>1?sel.length+' usuarios':'usuario'}`}</button></div></div></div>);
 }
 
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    MODAL CONFIRMAR ELIMINAR SOLICITUD
-══════════════════════════════════════════════════════════════ */
+========================================================= */
 function ModalConfirmarEliminarSolicitud({solicitudes:sel,onClose,onEliminado,sesion}:{solicitudes:Solicitud[];onClose:()=>void;onEliminado:()=>void;sesion:Sesion}){
   const [eliminando,setEliminando]=useState(false);const[error,setError]=useState('');
   const handleEliminar=async()=>{
@@ -622,22 +890,20 @@ function ModalConfirmarEliminarSolicitud({solicitudes:sel,onClose,onEliminado,se
   return(<div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}><div className="modal-card" style={{maxWidth:420}}><div className="modal-header"><div style={{display:'flex',alignItems:'center',gap:8,color:'#ef4444'}}><IcoTrash/><h3 style={{margin:0,fontSize:15,fontWeight:600,color:'#111827'}}>Confirmar eliminación</h3></div><button className="modal-close-btn" onClick={onClose}><IcoClose/></button></div>{error&&<div className="modal-error">{error}</div>}<div className="modal-body"><p style={{fontSize:13,color:'#374151',margin:0}}>Vas a eliminar <strong>{sel.length} solicitud{sel.length>1?'es':''}</strong>:</p><ul style={{margin:'10px 0 0',paddingLeft:18,fontSize:12,color:'#6b7280'}}>{sel.map(s=><li key={s.id}>Solicitud #{s.id} — {s.entidad||s.codigoProceso||'Sin nombre'}</li>)}</ul><p style={{fontSize:12,color:'#64748b',marginTop:12}}>Los registros se moverán a <strong>Solicitudes eliminadas</strong> y podrán recuperarse.</p></div><div className="modal-actions"><button className="modal-btn-cancel" onClick={onClose} disabled={eliminando}>Cancelar</button><button onClick={handleEliminar} disabled={eliminando} style={{height:34,padding:'0 18px',border:'none',borderRadius:6,background:'#ef4444',color:'white',fontFamily:'var(--font)',fontSize:12,fontWeight:600,cursor:'pointer'}}>{eliminando?'Eliminando…':`Eliminar ${sel.length>1?sel.length+' solicitudes':'solicitud'}`}</button></div></div></div>);
 }
 
-/* ══════════════════════════════════════════════════════════════
-   EXCEL
-══════════════════════════════════════════════════════════════ */
+/* =========================================================
+   Exportación a Excel
+========================================================= */
 function exportarExcel(usuarios:User[]){
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const hacer=(XLSX:any)=>{const cab=['ID','Cédula','Celular','Entidad del grupo','Cargo','Email','Usuario','Rol','Estado'];const filas=usuarios.map(u=>[u.id,u.cedula,u.celular,u.entidadGrupo,u.cargo,u.email,u.usuario,u.rol,u.estado]);const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet([cab,...filas]);XLSX.utils.book_append_sheet(wb,ws,'Usuarios');XLSX.writeFile(wb,`usuarios_${new Date().toISOString().slice(0,10)}.xlsx`);};
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if((window as any).XLSX){hacer((window as any).XLSX);return;}
+  const hacer=(XLSX:XlsxLike)=>{const cab=['ID','Cédula','Celular','Entidad del grupo','Cargo','Email','Usuario','Rol','Estado'];const filas=usuarios.map(u=>[u.id,u.cedula,u.celular,u.entidadGrupo,u.cargo,u.email,u.usuario,u.rol,u.estado]);const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet([cab,...filas]);XLSX.utils.book_append_sheet(wb,ws,'Usuarios');XLSX.writeFile(wb,`usuarios_${new Date().toISOString().slice(0,10)}.xlsx`);};
+  const xlsx = getWindowXlsx();
+  if(xlsx){hacer(xlsx);return;}
   const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  s.onload=()=>hacer((window as any).XLSX);document.head.appendChild(s);
+  s.onload=()=>{const loadedXlsx=getWindowXlsx();if(loadedXlsx)hacer(loadedXlsx);};document.head.appendChild(s);
 }
 
-/* ══════════════════════════════════════════════════════════════
-   MÓDULO USUARIOS
-══════════════════════════════════════════════════════════════ */
+/* =========================================================
+   Módulo de usuarios
+========================================================= */
 function ModuloUsuarios({sesion,onSesionActualizada}:{sesion:Sesion;onSesionActualizada:(s:Sesion)=>void}){
   const [usuarios,setUsuarios]=useState<User[]>([]);
   const [cargando,setCargando]=useState(true);
@@ -647,10 +913,10 @@ function ModuloUsuarios({sesion,onSesionActualizada}:{sesion:Sesion;onSesionActu
   const [modalAbierto,setModalAbierto]=useState(false);
   const [modalEditar,setModalEditar]=useState<User|null>(null);
   const [modalEliminar,setModalEliminar]=useState(false);
-  // ── PAGINACIÓN LOCAL ──────────────────────────────────────
+  // Paginación local
   const [pagina,setPagina]=useState(1);
   const POR_PAGINA=8;
-  // ─────────────────────────────────────────────────────────
+
  
   const cargarUsuarios=useCallback(async()=>{
     setCargando(true);setErrorCarga('');
@@ -672,7 +938,7 @@ function ModuloUsuarios({sesion,onSesionActualizada}:{sesion:Sesion;onSesionActu
     return[u.cedula,u.entidadGrupo,u.cargo,u.email,u.usuario,u.rol].some(v=>v.toLowerCase().includes(q));
   });
  
-  // ── Paginación ────────────────────────────────────────────
+  // Paginación
   const totalPages=Math.max(1,Math.ceil(filtrados.length/POR_PAGINA));
   const inicio=(pagina-1)*POR_PAGINA;
   const fin=inicio+POR_PAGINA;
@@ -689,7 +955,7 @@ function ModuloUsuarios({sesion,onSesionActualizada}:{sesion:Sesion;onSesionActu
     arr.push(t);
     return arr;
   })();
-  // ─────────────────────────────────────────────────────────
+
  
   const todosMarcados=paginados.length>0&&paginados.every(u=>seleccionados.includes(u.id));
   const toggleAll=(c:boolean)=>{
@@ -796,9 +1062,253 @@ function ModuloUsuarios({sesion,onSesionActualizada}:{sesion:Sesion;onSesionActu
   );
 }
 
-/* ══════════════════════════════════════════════════════════════
+function ModuloPerfiles({sesion}:{sesion:Sesion}){
+  const [usuarios,setUsuarios]=React.useState<User[]>([]);
+  const [cargando,setCargando]=React.useState(true);
+  const [error,setError]=React.useState('');
+  const [busqueda,setBusqueda]=React.useState('');
+  const [editando,setEditando]=React.useState<User|null>(null);
+  const [guardando,setGuardando]=React.useState(false);
+  const [errorEdit,setErrorEdit]=React.useState('');
+  const [rolEdit,setRolEdit]=React.useState('');
+
+  const ROLES_SISTEMA=[
+    'Administrador','Gerencia','Analista Mercadeo',
+    'Director Comercial','Coordinador Comercial',
+    'Analista Comercial','Usuario Final',
+  ];
+
+  const cargar=React.useCallback(async()=>{
+    setCargando(true);setError('');
+    try{
+      const res=await fetch('/api/users');
+      const data=await res.json();
+      if(!res.ok)throw new Error(data.error||'Error');
+      setUsuarios(Array.isArray(data)?data:[]);
+    }catch(e){setError(e instanceof Error?e.message:'Error al cargar');}
+    finally{setCargando(false);}
+  },[]);
+
+  React.useEffect(()=>{cargar();},[cargar]);
+
+  const filtrados=usuarios.filter(u=>{
+    if(!busqueda)return true;
+    const q=busqueda.toLowerCase();
+    return(
+      u.usuario.toLowerCase().includes(q)||
+      u.cargo.toLowerCase().includes(q)||
+      u.rol.toLowerCase().includes(q)||
+      u.entidadGrupo.toLowerCase().includes(q)
+    );
+  });
+
+  const abrirEdicion=(u:User)=>{
+    setEditando(u);
+    setRolEdit(u.rol);
+    setErrorEdit('');
+  };
+
+  const guardarRol=async()=>{
+    if(!editando||!rolEdit){setErrorEdit('Selecciona un rol.');return;}
+    setGuardando(true);setErrorEdit('');
+    try{
+      const res=await fetch(`/api/users/${editando.id}`,{
+        method:'PUT',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          usuario:editando.usuario,
+          cedula:editando.cedula,
+          email:editando.email,
+          celular:editando.celular,
+          entidadGrupo:editando.entidadGrupo,
+          cargo:editando.cargo,
+          estado:editando.estado,
+          rol:rolEdit,
+        }),
+      });
+      const data=await res.json();
+      if(!res.ok)throw new Error(data.error||'Error al guardar');
+      setUsuarios(prev=>prev.map(u=>u.id===editando.id?{...u,rol:rolEdit}:u));
+      setEditando(null);
+    }catch(e){setErrorEdit(e instanceof Error?e.message:'Error al guardar');}
+    finally{setGuardando(false);}
+  };
+
+  const rolColor=(rol:string)=>{
+    const r=rol.toLowerCase();
+    if(r.includes('admin'))return{bg:'#fef3c7',color:'#92400e'};
+    if(r.includes('gerencia'))return{bg:'#e0e7ff',color:'#3730a3'};
+    if(r.includes('mercadeo'))return{bg:'#d1fae5',color:'#065f46'};
+    if(r.includes('director'))return{bg:'#fee2e2',color:'#991b1b'};
+    if(r.includes('coordinador'))return{bg:'#fce7f3',color:'#9d174d'};
+    if(r.includes('analista comercial'))return{bg:'#e0f2fe',color:'#0369a1'};
+    return{bg:'#f1f5f9',color:'#475569'};
+  };
+
+  const F='var(--font)';
+
+  if(cargando)return<div className="content"><div className="module-status">Cargando perfiles…</div></div>;
+  if(error)return<div className="content"><div className="module-status error">{error}</div></div>;
+
+  return(
+    <>
+      {/* Modal edición de rol */}
+      {editando&&(
+        <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)setEditando(null);}}>
+          <div style={{background:'white',borderRadius:12,width:'94vw',maxWidth:460,boxShadow:'0 20px 60px rgba(15,32,64,.2)',overflow:'hidden',border:'1px solid #e2e8f0'}}>
+            <div style={{padding:'18px 24px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+              <div>
+                <div style={{fontSize:15,fontWeight:700,color:'#0f172a',fontFamily:F}}>Cambiar rol</div>
+                <div style={{fontSize:12,color:'#94a3b8',fontFamily:F,marginTop:2}}>{editando.usuario} · {editando.cargo}</div>
+              </div>
+              <button onClick={()=>setEditando(null)} style={{width:30,height:30,borderRadius:8,border:'1.5px solid #e2e8f0',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8'}}
+                onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#fef2f2';(e.currentTarget as HTMLButtonElement).style.color='#ef4444';}}
+                onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';(e.currentTarget as HTMLButtonElement).style.color='#94a3b8';}}>
+                <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div style={{padding:'20px 24px',display:'flex',flexDirection:'column' as const,gap:14}}>
+              {errorEdit&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,padding:'10px 14px',color:'#dc2626',fontSize:12,fontFamily:F}}>⚠️ {errorEdit}</div>}
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:6}}>Rol actual</div>
+                <span style={{display:'inline-flex',alignItems:'center',fontSize:12,fontWeight:600,padding:'4px 12px',borderRadius:999,...rolColor(editando.rol),fontFamily:F}}>{editando.rol||'Sin rol'}</span>
+              </div>
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:6}}>Nuevo rol *</div>
+                <select value={rolEdit} onChange={e=>setRolEdit(e.target.value)}
+                  style={{width:'100%',height:38,border:'1.5px solid #e2e8f0',borderRadius:8,padding:'0 12px',fontSize:13,fontFamily:F,color:'#1e293b',outline:'none',background:'white',boxSizing:'border-box' as const}}>
+                  <option value="">— Seleccione —</option>
+                  {ROLES_SISTEMA.map(r=><option key={r} value={r}>{r}</option>)}
+                </select>
+              </div>
+              <div style={{background:'#f8fafc',borderRadius:8,padding:'10px 14px',fontSize:12,color:'#64748b',fontFamily:F,lineHeight:1.6}}>
+                <strong style={{color:'#374151'}}>Descripción del rol:</strong>
+                {rolEdit==='Administrador'&&' Acceso total a todos los módulos y acciones del sistema.'}
+                {rolEdit==='Gerencia'&&' Solo lectura en todos los módulos. No puede modificar registros.'}
+                {rolEdit==='Analista Mercadeo'&&' Gestiona búsqueda de procesos y crea solicitudes desde búsqueda.'}
+                {rolEdit==='Director Comercial'&&' Gestión completa de solicitudes y asignaciones comerciales.'}
+                {rolEdit==='Coordinador Comercial'&&' Gestión de solicitudes y asignaciones. Sin acceso a administración.'}
+                {rolEdit==='Analista Comercial'&&' Gestiona asignaciones pendientes. No puede crear solicitudes.'}
+                {rolEdit==='Usuario Final'&&' Visualización limitada. Solo puede ver dashboard, documentos y cronogramas.'}
+                {!rolEdit&&' Selecciona un rol para ver su descripción.'}
+              </div>
+            </div>
+            <div style={{padding:'14px 24px',borderTop:'1px solid #f1f5f9',display:'flex',gap:8,justifyContent:'flex-end'}}>
+              <button onClick={()=>setEditando(null)} disabled={guardando}
+                style={{height:36,padding:'0 16px',borderRadius:8,border:'1.5px solid #e2e8f0',background:'white',color:'#475569',fontSize:12.5,fontFamily:F,cursor:'pointer'}}>
+                Cancelar
+              </button>
+              <button onClick={guardarRol} disabled={guardando||!rolEdit}
+                style={{height:36,padding:'0 20px',borderRadius:8,background:guardando||!rolEdit?'#e2e8f0':'#1e5799',color:guardando||!rolEdit?'#94a3b8':'white',border:'none',fontSize:12.5,fontWeight:600,fontFamily:F,cursor:guardando||!rolEdit?'not-allowed':'pointer'}}
+                onMouseOver={e=>{if(!guardando&&rolEdit)(e.currentTarget as HTMLButtonElement).style.background='#174a85';}}
+                onMouseOut={e=>{if(!guardando&&rolEdit)(e.currentTarget as HTMLButtonElement).style.background='#1e5799';}}>
+                {guardando?'Guardando…':'Guardar rol'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="content">
+        <div className="page-header">
+          <div className="page-title">
+            <IcoUsuarios/>
+            <span>Perfiles y roles : {filtrados.length} / {usuarios.length}</span>
+          </div>
+          <div className="page-actions">
+            <input type="text" className="search-box" placeholder="Buscar usuario…" value={busqueda} onChange={e=>setBusqueda(e.target.value)}/>
+            <button className="icon-btn" title="Actualizar" onClick={cargar}><IcoRefresh/></button>
+          </div>
+        </div>
+
+        {/* Resumen por rol */}
+        <div style={{display:'flex',gap:10,marginBottom:16,flexWrap:'wrap' as const}}>
+          {ROLES_SISTEMA.map(rol=>{
+            const count=usuarios.filter(u=>u.rol===rol).length;
+            if(count===0)return null;
+            const rc=rolColor(rol);
+            return(
+              <div key={rol} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 14px',background:'white',border:'1px solid #e2e8f0',borderRadius:10,cursor:'pointer',transition:'all .15s'}}
+                onClick={()=>setBusqueda(rol)}
+                onMouseOver={e=>{(e.currentTarget as HTMLDivElement).style.borderColor='#1e5799';}}
+                onMouseOut={e=>{(e.currentTarget as HTMLDivElement).style.borderColor='#e2e8f0';}}>
+                <span style={{width:8,height:8,borderRadius:'50%',background:rc.color,flexShrink:0}}/>
+                <span style={{fontSize:12,fontWeight:600,color:'#374151',fontFamily:F}}>{rol}</span>
+                <span style={{fontSize:11,fontWeight:700,color:rc.color,background:rc.bg,padding:'1px 7px',borderRadius:999,fontFamily:F}}>{count}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="table-card">
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th style={{minWidth:160}}><div className="th-top">Usuario</div></th>
+                  <th style={{minWidth:160}}><div className="th-top">Cargo</div></th>
+                  <th style={{minWidth:130}}><div className="th-top">Entidad grupo</div></th>
+                  <th style={{minWidth:160}}><div className="th-top">Rol actual</div></th>
+                  <th style={{minWidth:80}}><div className="th-top">Estado</div></th>
+                  <th style={{minWidth:80}}><div className="th-top">Acción</div></th>
+                </tr>
+                <tr>{[0,1,2,3,4,5].map(i=><th key={i}><div style={{padding:'0 10px 5px',color:'#d1d5db',fontSize:11}}>≡</div></th>)}</tr>
+              </thead>
+              <tbody>
+                {filtrados.length===0
+                  ?<tr><td colSpan={6} style={{textAlign:'center',color:'#6b7280',padding:'36px 10px',fontSize:13}}>No se encontraron usuarios.</td></tr>
+                  :filtrados.map(u=>{
+                    const rc=rolColor(u.rol);
+                    const pc=perfilColor(u.entidadGrupo);
+                    return(
+                      <tr key={u.id}>
+                        <td>
+                          <div style={{display:'flex',alignItems:'center',gap:8}}>
+                            <div style={{width:28,height:28,borderRadius:'50%',background:'#1e5799',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700,flexShrink:0,fontFamily:F}}>{u.usuario.slice(0,2).toUpperCase()}</div>
+                            <div>
+                              <div style={{fontSize:12.5,fontWeight:600,color:'#0f172a',fontFamily:F}}>{u.usuario}</div>
+                              <div style={{fontSize:11,color:'#94a3b8',fontFamily:F}}>{u.email}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td style={{fontSize:12,color:'#374151',fontFamily:F}}>{u.cargo}</td>
+                        <td>
+                          <span style={{fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:20,background:pc.bg,color:pc.color,whiteSpace:'nowrap' as const}}>{pc.label}</span>
+                        </td>
+                        <td>
+                          <span style={{display:'inline-flex',alignItems:'center',fontSize:11.5,fontWeight:600,padding:'4px 12px',borderRadius:999,background:rc.bg,color:rc.color,fontFamily:F,whiteSpace:'nowrap' as const}}>{u.rol||'Sin rol'}</span>
+                        </td>
+                        <td>
+                          <span style={{fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:20,background:u.estado==='Activo'?'#E8F5E9':'#f1f5f9',color:u.estado==='Activo'?'#1B5E20':'#475569',whiteSpace:'nowrap' as const}}>{u.estado}</span>
+                        </td>
+                        <td>
+                          <button onClick={()=>abrirEdicion(u)}
+                            style={{height:30,padding:'0 12px',borderRadius:7,border:'1.5px solid #e2e8f0',background:'white',color:'#1e5799',fontSize:11.5,fontWeight:600,fontFamily:F,cursor:'pointer',display:'inline-flex',alignItems:'center',gap:5,transition:'all .15s'}}
+                            onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor='#1e5799';(e.currentTarget as HTMLButtonElement).style.background='#eff6ff';}}
+                            onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor='#e2e8f0';(e.currentTarget as HTMLButtonElement).style.background='white';}}>
+                            <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                            Cambiar rol
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                }
+              </tbody>
+            </table>
+          </div>
+          <div className="pagination-bar">
+            <span>{filtrados.length} de {usuarios.length} usuarios</span>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* =========================================================
    MODAL DOCUMENTOS (Búsqueda)
-══════════════════════════════════════════════════════════════ */
+========================================================= */
 function ModalDocumentos({p,onClose}:{p:LiciProceso;onClose:()=>void}){
   const docs=p.documentos??[];
   const extInfo=(d:LiciDocumento)=>{const src=(d.ruta||d.url||'').toLowerCase();if(src.includes('.xlsx')||src.includes('.xls'))return{bg:'#E8F5E9',color:'#1B5E20',border:'#A5D6A7',label:'XLS'};if(src.includes('.docx')||src.includes('.doc'))return{bg:'#E3F2FD',color:'#0D47A1',border:'#90CAF9',label:'DOC'};if(src.includes('.zip')||src.includes('.rar'))return{bg:'#F3E5F5',color:'#4A148C',border:'#CE93D8',label:'ZIP'};return{bg:'#FFEBEE',color:'#B71C1C',border:'#EF9A9A',label:'PDF'};};
@@ -867,7 +1377,7 @@ function ModalDetalleProceso({p,onClose,onGestionar}:{p:LiciProceso;onClose:()=>
 
   const hG=async()=>{if(!onGestionar)return;setGuardando(true);setErrorGuardar('');try{await onGestionar();}catch(e){setErrorGuardar(e instanceof Error?e.message:'Error al guardar.');}finally{setGuardando(false);}};
 
-  // ── Estilos base uniformes ──
+  // Estilos base del módulo
   const F='var(--font)';
   const FS=13;
   const FC='#334155';
@@ -1058,7 +1568,6 @@ function ModalDetalleProceso({p,onClose,onGestionar}:{p:LiciProceso;onClose:()=>
               {p.departamento&&<SideItem label="Localización">{p.departamento}</SideItem>}
             </div>
 
-
             <div style={{flex:1}}/>
 
             {/* Acciones */}
@@ -1094,9 +1603,9 @@ function ModalDetalleProceso({p,onClose,onGestionar}:{p:LiciProceso;onClose:()=>
     </div>
   );
 }
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    TARJETA PROCESO
-══════════════════════════════════════════════════════════════ */
+========================================================= */
 function TarjetaProceso({p,onDetalle,leido}:{p:LiciProceso;onDetalle:()=>void;leido:boolean}){
   const fV=(v:number|null)=>{if(v==null||Number.isNaN(v)||v===0)return null;return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',minimumFractionDigits:0}).format(v);};
   const fD=(r:string|null)=>{if(!r)return null;const d=new Date(r);return Number.isNaN(d.getTime())?r:d.toLocaleDateString('es-CO',{day:'2-digit',month:'short',year:'numeric'});};
@@ -1105,10 +1614,10 @@ function TarjetaProceso({p,onDetalle,leido}:{p:LiciProceso;onDetalle:()=>void;le
   return(<div onClick={onDetalle} style={{background:'white',border:`1px solid ${leido?'#e2e8f0':'#bbf7d0'}`,borderRadius:12,padding:'16px 18px',cursor:'pointer',transition:'box-shadow .15s, border-color .15s',position:'relative',overflow:'hidden'}} onMouseOver={e=>{(e.currentTarget as HTMLDivElement).style.boxShadow='0 4px 16px rgba(0,0,0,.09)';(e.currentTarget as HTMLDivElement).style.borderColor=leido?'#A8CCEC':'#86efac';}} onMouseOut={e=>{(e.currentTarget as HTMLDivElement).style.boxShadow='none';(e.currentTarget as HTMLDivElement).style.borderColor=leido?'#e2e8f0':'#bbf7d0';}}>{!leido&&<div style={{position:'absolute',top:12,left:12,background:'#dcfce7',color:'#166534',fontSize:10,fontWeight:700,padding:'2px 10px',borderRadius:20}}>No leído</div>}<div style={{display:'flex',alignItems:'flex-start',gap:12,marginTop:leido?0:24}}><div style={{position:'relative',flexShrink:0}} onMouseOver={e=>{const t=e.currentTarget.querySelector('.portal-tip') as HTMLElement;if(t)t.style.opacity='1';}} onMouseOut={e=>{const t=e.currentTarget.querySelector('.portal-tip') as HTMLElement;if(t)t.style.opacity='0';}}><div style={{width:38,height:38,borderRadius:'50%',background:portal.bg,color:portal.color,fontSize:11,fontWeight:800,display:'flex',alignItems:'center',justifyContent:'center'}}>{portal.label}</div><div className="portal-tip" style={{opacity:0,pointerEvents:'none',transition:'opacity .15s',position:'absolute',top:'110%',left:'50%',transform:'translateX(-50%)',background:'#1e293b',color:'white',fontSize:11,fontWeight:600,whiteSpace:'nowrap',padding:'4px 10px',borderRadius:6,zIndex:100}}>{p.fuente||portal.label}<div style={{position:'absolute',bottom:'100%',left:'50%',transform:'translateX(-50%)',width:0,height:0,borderLeft:'5px solid transparent',borderRight:'5px solid transparent',borderBottom:'5px solid #1e293b'}}/></div></div><div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:700,color:'#0f172a',lineHeight:1.3,marginBottom:2}}>{p.entidad||'—'}</div>{p.codigoProceso&&<div style={{fontSize:11,color:'#94a3b8',fontFamily:'monospace',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.codigoProceso}</div>}</div><div style={{display:'flex',alignItems:'center',gap:5,flexShrink:0}}><span style={{fontSize:11,fontWeight:600,padding:'3px 12px',borderRadius:20,background:eb.bg,color:eb.color}}>{p.estado||'—'}</span>{pc&&<span style={{fontSize:10,fontWeight:700,padding:'3px 10px',borderRadius:20,background:pc.bg,color:pc.color}}>{pc.label}</span>}</div></div><div style={{fontSize:12.5,color:'#334155',lineHeight:1.5,marginTop:12,marginLeft:50,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const,overflow:'hidden'}}>{p.objeto||p.nombre||'—'}</div><div style={{display:'flex',alignItems:'center',gap:16,marginTop:10,marginLeft:50,flexWrap:'wrap'}}>{valor&&<span style={{fontSize:13,fontWeight:700,color:'#16a34a'}}>{valor}</span>}{p.departamento&&<span style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:3}}><svg fill="currentColor" viewBox="0 0 20 20" style={{width:11,height:11}}><path d="M10 2a6 6 0 00-6 6c0 4.5 6 10 6 10s6-5.5 6-10a6 6 0 00-6-6zm0 8a2 2 0 110-4 2 2 0 010 4z"/></svg>{p.departamento}</span>}{fecha&&<span style={{fontSize:11,color:'#94a3b8'}}>📅 {fecha}</span>}{vence&&<span style={{fontSize:11,color:'#ef4444',fontWeight:500}}>⏰ Vence: {vence}</span>}</div><div style={{height:1,background:'#f1f5f9',margin:'12px 0 10px'}}/><div style={{display:'flex',alignItems:'center',gap:8}} onClick={e=>e.stopPropagation()}><VerDocumentosBtn p={p}/><button onClick={onDetalle} style={{display:'inline-flex',alignItems:'center',gap:5,height:28,padding:'0 14px',borderRadius:20,border:'1.5px solid #1E5799',color:'#1E5799',background:'white',fontSize:11,fontWeight:600,fontFamily:'var(--font)',cursor:'pointer'}}><svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2M12 12h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>Gestionar proceso</button></div></div>);
 }
 
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    MÓDULO BÚSQUEDA
-══════════════════════════════════════════════════════════════ */
-function ModuloBusquedaProcesos({onModuleChange,sesion}:{onModuleChange?:(mod:string)=>void;sesion?:Sesion}){
+========================================================= */
+function ModuloBusquedaProcesos({onModuleChange,sesion,puedeGestionar=true}:{onModuleChange?:(mod:string)=>void;sesion?:Sesion;puedeGestionar?:boolean}){
   const [busqueda,setBusqueda]=useState('');
   const [pagina,setPagina]=useState(1);
   const [resultado,setResultado]=useState<ProcesosApiResponse|null>(null);
@@ -1165,40 +1674,41 @@ function ModuloBusquedaProcesos({onModuleChange,sesion}:{onModuleChange?:(mod:st
     !!fA.fechaHasta;
 
   const aplicar=()=>{
-    setFA({
-      entidad:fEnt,
-      portal:fPor,
-      fuente:fFuente,
-      dpto:fDpto,
-      codigo:fCod,
-      fechaDesde:fFD,
-      fechaHasta:fFH
-    });
-    setPagina(1);
-    setPF(false);
-  };
+  setFA(prev=>({
+    ...prev,
+    entidad:fEnt,
+    portal:fPor,
+    fuente:fFuente,
+    dpto:fDpto,
+    codigo:fCod,
+    fechaDesde:fFD,
+    fechaHasta:fFH,
+  }));
+  setPagina(1);
+  setPF(false);
+};
 
-  const limpiar=()=>{
-    setFEnt('all');
-    setFPor('all');
-    setFFuente('all');
-    setFDpto('');
-    setFCod('');
-    setFFD('');
-    setFFH('');
-    setFA({
-      entidad:'all',
-      portal:'all',
-      fuente:'all',
-      dpto:'',
-      codigo:'',
-      fechaDesde:'',
-      fechaHasta:''
-    });
-    setBusqueda('');
-    setPagina(1);
-  };
-
+const limpiar=()=>{
+  setFEnt('all');
+  setFPor('all');
+  setFFuente('all');
+  setFDpto('');
+  setFCod('');
+  setFFD('');
+  setFFH('');
+  setFA(prev=>({
+    ...prev,
+    entidad:'all' as const,
+    portal:'all' as const,
+    fuente:'all',
+    dpto:'',
+    codigo:'',
+    fechaDesde:'',
+    fechaHasta:'',
+  }));
+  setBusqueda('');
+  setPagina(1);
+};
   const POR_PAGINA=6;
   const syncEnCursoRef = React.useRef(false);
   const intervaloSyncRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
@@ -1228,11 +1738,17 @@ function ModuloBusquedaProcesos({onModuleChange,sesion}:{onModuleChange?:(mod:st
     setError('');
     try{
       const params=new URLSearchParams({page:String(pag),limit:String(POR_PAGINA)});
-      const _perfiles = Array.isArray(f.perfiles)&&f.perfiles.length ? f.perfiles : (f.perfil&&f.perfil!==''&&f.perfil!=='all'?[f.perfil]:[]);
-      const _fuentes  = Array.isArray(f.fuentes)&&f.fuentes.length   ? f.fuentes  : (f.fuente&&f.fuente!==''&&f.fuente!=='all'?[f.fuente]:[]);
-      const _estados  = Array.isArray(f.estados)&&f.estados.length   ? f.estados  : (f.estado&&f.estado!==''&&f.estado!=='all'?[f.estado]:[]);
-      const _modals   = Array.isArray(f.modalidades)&&f.modalidades.length ? f.modalidades : (f.modalidad&&f.modalidad!==''&&f.modalidad!=='all'?[f.modalidad]:[]);
-      const _deptos   = Array.isArray(f.departamentos)&&f.departamentos.length ? f.departamentos : (f.departamento&&f.departamento!=='all'?[f.departamento]:(f.dpto&&f.dpto!=='all'?[f.dpto]:[]));
+      const fARecord = safeRecord(f);
+      const perfilesSeleccionados = safeArray<string>(fARecord.perfiles);
+      const fuentesSeleccionadas = safeArray<string>(fARecord.fuentes);
+      const estadosSeleccionados = safeArray<string>(fARecord.estados);
+      const modalidadesSeleccionadas = safeArray<string>(fARecord.modalidades);
+      const departamentosSeleccionados = safeArray<string>(fARecord.departamentos);
+      const _perfiles = perfilesSeleccionados.length ? perfilesSeleccionados : (f.perfil&&f.perfil!==''&&f.perfil!=='all'?[f.perfil]:[]);
+      const _fuentes  = fuentesSeleccionadas.length ? fuentesSeleccionadas : (f.fuente&&f.fuente!==''&&f.fuente!=='all'?[f.fuente]:[]);
+      const _estados  = estadosSeleccionados.length ? estadosSeleccionados : (f.estado&&f.estado!==''&&f.estado!=='all'?[f.estado]:[]);
+      const _modals   = modalidadesSeleccionadas.length ? modalidadesSeleccionadas : (f.modalidad&&f.modalidad!==''&&f.modalidad!=='all'?[f.modalidad]:[]);
+      const _deptos   = departamentosSeleccionados.length ? departamentosSeleccionados : (f.departamento&&f.departamento!=='all'?[f.departamento]:(f.dpto&&f.dpto!=='all'?[f.dpto]:[]));
       if(_perfiles.length) params.set('perfiles',    _perfiles.join(','));
       if(_fuentes.length)  params.set('fuentes',     _fuentes.join(','));
       if(_estados.length)  params.set('estados',     _estados.join(','));
@@ -1258,7 +1774,6 @@ function ModuloBusquedaProcesos({onModuleChange,sesion}:{onModuleChange?:(mod:st
       setCargando(false);
     }
   },[]);
-
 
   const handleSync = useCallback(async (silencioso = false) => {
   if (syncEnCursoRef.current) return;
@@ -1306,7 +1821,6 @@ useEffect(()=>{
   fARef.current = fA;
   consultar(1, fA);
   setPagina(1);
-// eslint-disable-next-line react-hooks/exhaustive-deps
 },[fA.perfil, fA.fuente, fA.departamento, fA.dpto, fA.estado, fA.modalidad, fA.codigo, fA.fechaDesde, fA.fechaHasta]);
 
   useEffect(() => {
@@ -1447,9 +1961,11 @@ useEffect(()=>{
   };
 
 if(fichaAbierta){
+    const fichaExtendida = safeRecord(fichaAbierta);
+    const procesoIdFicha = safeNumber(getRecordValue(fichaExtendida, '_dbId'), fichaAbierta.id);
     const sol:Solicitud={
       id:0,
-      procesoId:(fichaAbierta as any)._dbId??fichaAbierta.id??null,
+      procesoId:procesoIdFicha||null,
       procesoSourceKey:'',
       codigoProceso:fichaAbierta.codigoProceso??'',
       nombreProceso:fichaAbierta.nombre??'',
@@ -1492,6 +2008,7 @@ if(fichaAbierta){
         sesion={sesion!}
         onVolver={()=>setFichaAbierta(null)}
         onGestionar={async()=>{handleGestionar(fichaAbierta);setFichaAbierta(null);onModuleChange?.('solicitudesComercial');}}
+        puedeGestionar={puedeGestionar}
       />
     );
   }
@@ -1551,11 +2068,9 @@ return (
 
 const ModuloBusquedaFinal = ModuloBusquedaProcesos;
 
-/* ══════════════════════════════════════════════════════════════
-   MODAL DETALLES DEL PROCESO (desde solicitud)
-   Muestra la información original del proceso capturado.
-   Solo lectura — similar al modal de Búsqueda de procesos.
-══════════════════════════════════════════════════════════════ */
+/* =========================================================
+   Modal de detalles del proceso
+========================================================= */
 function ModalDetallesProceso({sol,onClose}:{sol:Solicitud;onClose:()=>void}){
   const [docVista,setDocVista]=React.useState<'grid'|'list'>('list');
   const fmtFecha=(r:string|null)=>{if(!r)return null;const d=new Date(r.replace(' ','T'));if(Number.isNaN(d.getTime()))return r;return d.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'})+' · '+d.toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'});};
@@ -1638,7 +2153,7 @@ function ModalDetallesProceso({sol,onClose}:{sol:Solicitud;onClose:()=>void}){
         {/* BODY: 2 columnas */}
         <div style={{display:'grid',gridTemplateColumns:'1fr 280px',flex:1,minHeight:0,overflow:'hidden'}}>
 
-          {/* ── COL IZQUIERDA ── */}
+          {/* Panel principal */}
           <div className="modal-scroll-col" style={{overflowY:'auto',padding:'20px 24px',display:'flex',flexDirection:'column' as const,gap:22,scrollbarWidth:'thin' as const,scrollbarColor:'transparent transparent'}}>
 
             {/* 1. Objeto */}
@@ -1764,7 +2279,7 @@ function ModalDetallesProceso({sol,onClose}:{sol:Solicitud;onClose:()=>void}){
               </div>
             )}
           </div>
-          {/* ── COL DERECHA ── */}
+          {/* Panel lateral */}
           <div className="modal-scroll-col" style={{display:'flex',flexDirection:'column' as const,background:'white',borderLeft:'1px solid #f1f5f9',overflowY:'auto',scrollbarWidth:'thin' as const,scrollbarColor:'transparent transparent'}}>
 
             {/* Presupuesto */}
@@ -1830,30 +2345,33 @@ function ModalDetallesProceso({sol,onClose}:{sol:Solicitud;onClose:()=>void}){
     </div>
   );
 }
-/* ══════════════════════════════════════════════════════════════
-   MODAL PROCESO — Control de solicitud (edición de estado)
-   ModalDetallesProceso se abre desde aquí con el botón.
-══════════════════════════════════════════════════════════════ */
-/* ══════════════════════════════════════════════════════════════
-   MODAL ASIGNAR PROCESO
-   Reemplaza ModalProceso — mismo estilo que ModalDetallesProceso
-   Permite seleccionar responsable y crear asignación pendiente
-══════════════════════════════════════════════════════════════ */
+/* =========================================================
+   Modal de control de solicitud
+========================================================= */
+/* =========================================================
+   Modal de asignación de proceso
+========================================================= */
 function ModalProceso({sol,onClose,onGuardado,sesion,variante}:{sol:Solicitud;onClose:()=>void;onGuardado:(updated:Solicitud)=>void;sesion:Sesion;variante?:string}){
-  const [usuarios,setUsuarios]=React.useState<Array<{id:number;usuario:string;cargo:string;entidadGrupo:string;rol:string;estado:string}>>([]);
+  const [solActual,setSolActual]=React.useState(sol);
+  React.useEffect(()=>{
+    fetch(`/api/solicitudes/${sol.id}`).then(r=>r.json()).then(data=>{
+      if(data.ok&&data.solicitud)setSolActual(data.solicitud);
+    }).catch(()=>{});
+  },[sol.id]);
+  const [usuarios, setUsuarios] = React.useState<UsuarioAsignable[]>([]);
   const [verDetalle,setVerDetalle]=React.useState(false);
   const [responsable,setResponsable]=React.useState('');
   const [asignando,setAsignando]=React.useState(false);
   const [error,setError]=React.useState('');
   const [ok,setOk]=React.useState('');
 
-  const asignaciones:Array<Record<string,unknown>>=Array.isArray(sol.asignaciones)?sol.asignaciones as Array<Record<string,unknown>>:[];
+  const asignaciones = safeArray<Record<string, unknown>>(sol.asignaciones);
 
   const fmtFechaHora=(r:string|null)=>{if(!r)return'—';const d=new Date(r);return isNaN(d.getTime())?r:d.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'})+' '+d.toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'});};
   const fmtV=(v:number|null)=>{if(v==null||isNaN(v)||v===0)return null;return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',minimumFractionDigits:0}).format(v);};
 
   const portal=portalColorModal(sol.aliasFuente||'',sol.fuente||'',sol.fuente||'');
-  const pc=sol.perfil?perfilColor(sol.perfil):null;
+  const pc=solActual.perfil?perfilColor(solActual.perfil):null;
   const valor=fmtV(sol.valor);
   const modalidadLabel=MMAP_MODALIDAD[sol.modalidad]??sol.modalidad??'—';
 
@@ -1865,22 +2383,38 @@ function ModalProceso({sol,onClose,onGuardado,sesion,variante}:{sol:Solicitud;on
   const labelStyle:React.CSSProperties={fontSize:9,fontWeight:700,color:FC_LABEL,letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:4};
   const secTitle:React.CSSProperties={fontSize:12,fontWeight:700,color:FC_DARK,fontFamily:F,letterSpacing:'-0.01em',marginBottom:12,paddingBottom:8,borderBottom:'1px solid #f1f5f9'};
 
-  // Cargar usuarios activos
-  React.useEffect(()=>{
+  // Carga de usuarios activos disponibles para asignación.
+  React.useEffect(() => {
     fetch('/api/users')
-      .then(r=>r.json())
-      .then(data=>{
-        if(Array.isArray(data)){
-        const todos=data.filter((u:any)=>u.estado==='Activo');
-        const filteredByProceso = variante==='COMERCIAL'
-          ? todos.filter((u:any)=>u.proceso==='Comercial')
-          : variante==='ESPECIALIZADA'
-          ? todos.filter((u:any)=>u.proceso&&u.proceso!=='Comercial')
-          : todos;
-        setUsuarios(filteredByProceso);        }
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          const todos = safeArray<UsuarioActivo>(data).filter(
+            u => safeString(u.estado) === 'Activo'
+          );
+
+          const filteredByProceso =
+            variante === 'COMERCIAL'
+              ? todos.filter(u => safeString(u.proceso) === 'Comercial')
+              : variante === 'ESPECIALIZADA'
+                ? todos.filter(u => Boolean(safeString(u.proceso)) && safeString(u.proceso) !== 'Comercial')
+                : todos;
+
+          const usuariosAsignables: UsuarioAsignable[] = filteredByProceso.map(u => ({
+            id: safeNumber(u.id),
+            usuario: safeString(u.usuario),
+            cargo: safeString(u.cargo),
+            entidadGrupo: safeString(u.entidadGrupo),
+            rol: safeString(u.rol, 'Usuario Final'),
+            estado: safeString(u.estado, 'Activo'),
+            proceso: safeString(u.proceso),
+          }));
+
+          setUsuarios(usuariosAsignables);
+        }
       })
-      .catch(()=>{});
-  },[]);
+      .catch(() => {});
+  }, [variante]);
 
   const asignar=async()=>{
     if(!responsable){setError('Selecciona un responsable.');return;}
@@ -2006,7 +2540,7 @@ function ModalProceso({sol,onClose,onGuardado,sesion,variante}:{sol:Solicitud;on
             </div>
           </div>
 
-            {/* Asignar responsable */}
+            {/* Asignación de responsable */}
             <div>
               <div style={secTitle}>Asignar responsable</div>
               <div style={{display:'flex',flexDirection:'column' as const,gap:10}}>
@@ -2132,12 +2666,12 @@ function ModalProceso({sol,onClose,onGuardado,sesion,variante}:{sol:Solicitud;on
 
   );
 }
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    MÓDULO SOLICITUDES ABIERTAS
-══════════════════════════════════════════════════════════════ */
-/* ══════════════════════════════════════════════════════════════
+========================================================= */
+/* =========================================================
    MODAL EDITAR SOLICITUD
-══════════════════════════════════════════════════════════════ */
+========================================================= */
 function ModalEditarSolicitud({
   sol,
   sesion,
@@ -2258,7 +2792,8 @@ function ModalEditarSolicitud({
     plataforma: form.plataforma,
     fechaCierre: form.fechaCierre || null,
     estadoSolicitud: form.estadoSolicitud,
-    origenSolicitud: sol.origenSolicitud ?? origenSolicitudAuto,
+    origenSolicitud: sol.origenSolicitud ?? (sol.codigoProceso ? 'Comercial' : 'Especializada'),
+
   }),
 });
       const data = await res.json();
@@ -2491,9 +3026,9 @@ function ModalEditarSolicitud({
     </div>
   );
 }
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    MODAL CREAR SOLICITUD MANUAL
-══════════════════════════════════════════════════════════════ */
+========================================================= */
 const ENTIDADES_GRUPO=['Aseocolba','Vigicolba','Tempocolba'];
 const TIPOS_PROCESO=['Público','Privado'];
 const SUBTIPOS:Record<string,string[]>={
@@ -2652,6 +3187,7 @@ const [form, setForm] = useState(() => {
   outline:'none',
 };
   const lS:React.CSSProperties={fontSize:12,fontWeight:600,color:'#374151',display:'block',marginBottom:5};
+  const Req=()=><span style={{color:'#dc2626',marginRight:2}}>*</span>;
   const fG:React.CSSProperties={display:'flex',flexDirection:'column' as const,gap:4};
 
   return(
@@ -2673,31 +3209,28 @@ const [form, setForm] = useState(() => {
           {error&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,padding:'9px 12px',color:'#dc2626',fontSize:12}}>⚠️ {error}</div>}
           {tieneBorrador&&<div style={{background:'#fefce8',border:'1px solid #fde68a',borderRadius:6,padding:'9px 12px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}><span style={{fontSize:12,color:'#92400e'}}>📋 Se restauró un borrador guardado automáticamente.</span><button onClick={()=>{try{localStorage.removeItem(DRAFT_KEY);}catch{/**/}setForm({...formInicial,fechaSolicitud:ahora,nombrePersonal:sesion.usuario});setTieneBorrador(false);}} style={{fontSize:11,color:'#92400e',background:'none',border:'1px solid #fde68a',borderRadius:4,padding:'2px 8px',cursor:'pointer',fontFamily:'var(--font)'}}>Descartar</button></div>}
 
- {/* Fecha / Usuario */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        {/* Fecha / Usuario */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
             <div style={fG}>
-              <label style={lS}>Fecha de creación</label>
-              <input
-                style={{ ...iS, background: '#f1f5f9', color: '#64748b', borderColor: '#e2e8f0', cursor: 'not-allowed' }}
-                value={form.fechaSolicitud}
-                readOnly
-              />
+              <label style={lS}>Fecha de solicitud</label>
+              <div style={{display:'flex',alignItems:'center',height:38,border:'1.5px solid #e2e8f0',borderRadius:8,padding:'0 12px',background:'#f8fafc',gap:8}}>
+                <svg fill="none" stroke="#94a3b8" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14,flexShrink:0}}><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+                <span style={{fontSize:13,color:'#475569',fontFamily:'var(--font)'}}>{form.fechaSolicitud}</span>
+              </div>
             </div>
-
             <div style={fG}>
-              <label style={lS}>Usuario registra</label>
-              <input
-                style={{ ...iS, background: '#f1f5f9', color: '#64748b', borderColor: '#e2e8f0', cursor: 'not-allowed' }}
-                value={form.nombrePersonal}
-                readOnly
-              />
+              <label style={lS}>Nombre del personal</label>
+              <div style={{display:'flex',alignItems:'center',height:38,border:'1.5px solid #e2e8f0',borderRadius:8,padding:'0 12px',background:'#f8fafc',gap:8}}>
+                <svg fill="none" stroke="#94a3b8" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14,flexShrink:0}}><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z"/></svg>
+                <span style={{fontSize:13,color:'#475569',fontFamily:'var(--font)'}}>{form.nombrePersonal}</span>
+              </div>
             </div>
           </div>
 
           {/* Tipo / Entidad grupo */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <div style={fG}>
-              <label style={lS}>* Tipo de proceso</label>
+              <label style={lS}><Req/>Tipo de proceso</label>
               <select
                 style={iS}
                 value={form.tipoProceso}
@@ -2713,7 +3246,7 @@ const [form, setForm] = useState(() => {
             </div>
 
             <div style={fG}>
-              <label style={lS}>* Entidad del grupo</label>
+              <label style={lS}><Req/>Entidad del grupo</label>
               <select
                 style={iS}
                 value={form.entidadGrupo}
@@ -2746,7 +3279,7 @@ const [form, setForm] = useState(() => {
             </div>
 
             <div style={fG}>
-              <label style={lS}>* Ciudad</label>
+              <label style={lS}><Req/>Ciudad</label>
               <select
                 style={iS}
                 value={form.ciudad}
@@ -2834,7 +3367,7 @@ const [form, setForm] = useState(() => {
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               <div style={fG}>
-                <label style={lS}>* Cliente</label>
+                <label style={lS}><Req/>Cliente</label>
                 <input
                   style={iS}
                   placeholder="Nombre del cliente o entidad contratante"
@@ -2849,7 +3382,7 @@ const [form, setForm] = useState(() => {
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
             <div style={fG}>
-              <label style={lS}>* No. proceso</label>
+              <label style={lS}><Req/>No. proceso</label>
               <input
                 style={iS}
                 placeholder="Ej. MC-007-2026"
@@ -2893,7 +3426,7 @@ const [form, setForm] = useState(() => {
           </div>
 
           <div style={fG}>
-            <label style={lS}>* Descripción</label>
+            <label style={lS}><Req/>Descripción</label>
             <textarea
               style={{
                 ...iS,
@@ -2920,7 +3453,7 @@ const [form, setForm] = useState(() => {
   );
 }
 
-/* ── Config por variante ── */
+/* Configuración por variante */
 type VarianteSolicitudes = 'COMERCIAL' | 'ESPECIALIZADA' | 'TODAS' | 'RECHAZADA';
 const VARIANTE_CONFIG:Record<VarianteSolicitudes,{titulo:string;emptyMsg:string}> = {
   COMERCIAL:     {titulo:'Solicitudes Comerciales',   emptyMsg:'No hay solicitudes comerciales abiertas. Gestiona un proceso desde Búsqueda de procesos.'},
@@ -2940,11 +3473,12 @@ function matchVariante(s: Solicitud, variante: VarianteSolicitudes): boolean {
     return true;
   }
 
-  if (variante === 'RECHAZADA' || variante === 'RECHAZADAS') {
+  if (variante === 'RECHAZADA' || (variante as string) === 'RECHAZADAS') {
+
     return estado.includes('rechazad');
   }
 
-  if (variante === 'ELIMINADA' || variante === 'ELIMINADAS') {
+  if ((variante as string) === 'ELIMINADA' || (variante as string) === 'ELIMINADAS') {
     return true;
   }
 
@@ -2959,9 +3493,9 @@ function matchVariante(s: Solicitud, variante: VarianteSolicitudes): boolean {
   return true;
 }
 
-// ═══════════════════════════════════════════════════════════
-// STEPPER DE FASES
-// ═══════════════════════════════════════════════════════════
+/* =========================================================
+   STEPPER DE FASES
+========================================================= */
 const FASES_SOL = [
   { label: 'Selección\nde proceso' },
   { label: 'En revisión\ncomercial' },
@@ -2980,7 +3514,7 @@ function getFaseIdx(estado: string): number {
   if (e.includes('observaci')) return 3;
   if (e.includes('proceso') || e.includes('gesti')) return 4;
   if (e.includes('evaluac')) return 5;
-  if (e.includes('cerrad') || e.includes('terminad') || e.includes('liquid')) return 6;
+  if (e.includes('cerrad') || e.includes('cerrad') || e.includes('liquid')) return 6;
   return 0;
 }
 
@@ -3052,16 +3586,16 @@ function StepperSolicitud({ estadoSolicitud }: { estadoSolicitud: string }) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════
-// FILA EXPANDIDA INLINE
-// ═══════════════════════════════════════════════════════════
+/* =========================================================
+   FILA EXPANDIDA INLINE
+========================================================= */
 function FilaDetalle({
   sol, sesion, variante, onClose, onGuardado, colSpan,
 }: {
   sol: Solicitud; sesion: Sesion; variante: string;
   onClose: () => void; onGuardado: (u: Solicitud) => void; colSpan: number;
 }) {
-  const [usuarios, setUsuarios] = React.useState<Array<{id:number;usuario:string;cargo:string;entidadGrupo:string;rol:string;estado:string}>>([]);
+  const [usuarios, setUsuarios] = React.useState<UsuarioAsignable[]>([]);
   const [responsable, setResponsable] = React.useState('');
   const [asignando, setAsignando] = React.useState(false);
   const [error, setError] = React.useState('');
@@ -3098,7 +3632,17 @@ function FilaDetalle({
         const filtered = variante === 'COMERCIAL' ? todos.filter((u: any) => u.proceso === 'Comercial')
           : variante === 'ESPECIALIZADA' ? todos.filter((u: any) => u.proceso && u.proceso !== 'Comercial')
           : todos;
-        setUsuarios(filtered);
+        const usuariosAsignables: UsuarioAsignable[] = filtered.map(u => ({
+        id: safeNumber(u.id),
+        usuario: safeString(u.usuario),
+        cargo: safeString(u.cargo),
+        entidadGrupo: safeString(u.entidadGrupo),
+        rol: safeString(u.rol, 'Usuario Final'),
+        estado: safeString(u.estado, 'Activo'),
+        proceso: safeString(u.proceso),
+      }));
+
+      setUsuarios(usuariosAsignables);
       }
     }).catch(() => {});
   }, []);
@@ -3146,13 +3690,13 @@ function FilaDetalle({
         <td colSpan={colSpan} style={{ padding: 0, borderBottom: '2px solid #1e5799' }}>
           <div style={{ borderLeft: '3px solid #1e5799', margin: '0 4px', padding: '0 20px 20px' }}>
 
-            {/* ── Stepper ── */}
+            {/* Seguimiento del proceso */}
             <StepperSolicitud estadoSolicitud={sol.estadoSolicitud || ''} />
 
-            {/* ── Cuerpo en dos columnas ── */}
+            {/* Contenido en dos columnas */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 20, marginTop: 12 }}>
 
-              {/* Columna izquierda */}
+              {/* Panel principal */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
                 {/* Header */}
@@ -3201,7 +3745,7 @@ function FilaDetalle({
                   </div>
                 </div>
 
-                {/* Asignar responsable */}
+                {/* Asignación de responsable */}
                 <div style={{ background: 'white', border: '1px solid #e8edf2', borderRadius: 10, padding: '14px 16px' }}>
                   <div style={{ fontSize: 10.5, fontWeight: 700, color: '#1e5799', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: 10, fontFamily: F }}>Asignar responsable</div>
                   <div style={{ display: 'flex', gap: 8 }}>
@@ -3220,7 +3764,7 @@ function FilaDetalle({
                   {ok && <div style={{ fontSize: 12, color: '#15803d', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6, padding: '6px 10px', marginTop: 8, fontFamily: F }}>✓ {ok}</div>}
                 </div>
 
-                {/* Historial asignaciones */}
+                {/* Historial de asignaciones */}
                 {asignaciones.length > 0 && (
                   <div style={{ background: 'white', border: '1px solid #e8edf2', borderRadius: 10, padding: '14px 16px' }}>
                     <div style={{ fontSize: 10.5, fontWeight: 700, color: '#1e5799', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: 10, fontFamily: F }}>Historial de asignaciones ({asignaciones.length})</div>
@@ -3243,7 +3787,7 @@ function FilaDetalle({
                 )}
               </div>
 
-              {/* Columna derecha */}
+              {/* Panel lateral de acciones */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
                 {/* Presupuesto */}
@@ -3302,7 +3846,8 @@ function FilaDetalle({
 }
 
 function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesion:Sesion;variante:string;onVolver:()=>void;onGuardado:(u:Solicitud)=>void}){
-  const [usuarios,setUsuarios]=React.useState<Array<{id:number;usuario:string;cargo:string;entidadGrupo:string;rol:string;estado:string}>>([]);
+  const [solActual,setSolActual]=React.useState(sol);
+  const [usuarios, setUsuarios] = React.useState<UsuarioAsignable[]>([]);
   const [responsable,setResponsable]=React.useState('');
   const [asignando,setAsignando]=React.useState(false);
   const [error,setError]=React.useState('');
@@ -3310,20 +3855,30 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
   const [docVista,setDocVista]=React.useState<'grid'|'list'>('list');
   const [adendas,setAdendas]=React.useState<Array<{id:number;nombre:string;urlDocumento:string|null;fechaDetectado:string}>>([]);
   const [cargandoAdendas,setCargandoAdendas]=React.useState(false);
+  const [modoReasignar,setModoReasignar]=React.useState(false);
+
   const F='var(--font)';
   const FC='#334155';const FC_LABEL='#6b7280';const FC_DARK='#0f172a';
-  const asignaciones:Array<Record<string,unknown>>=Array.isArray(sol.asignaciones)?sol.asignaciones as Array<Record<string,unknown>>:[];
-  const pc=sol.perfil?perfilColor(sol.perfil):null;
+  const asignaciones = safeArray<Record<string, unknown>>(solActual.asignaciones);
+  const pc=solActual.perfil?perfilColor(solActual.perfil):null;
   const fmtFH=(r:string|null)=>{if(!r)return'—';const d=new Date(r);return isNaN(d.getTime())?r:d.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'})+' '+d.toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'});};
   const fmtV=(v:number|null)=>{if(v==null||isNaN(v)||v===0)return null;return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',minimumFractionDigits:0}).format(v);};
-  const docArr=Array.isArray(sol.docData)?sol.docData as any[]:[];
-  const procDataEntries=Object.entries(sol.procData||{}).filter(([,v])=>(v as any)?.fechaI||(v as any)?.obs);
-  const urlFuente=sol.linkSecop||sol.linkDetalle||sol.linkSecopReg||'';
-  const ebFuente=estadoBadgeColor(sol.estadoFuente||'');
-  const modalidadDisplay=(()=>{const m=sol.modalidad?.trim();if(!m||m==='—')return'—';return MMAP_MODALIDAD[m]??m;})();
-  const fuenteDisplay=sol.fuente?sol.fuente.charAt(0).toUpperCase()+sol.fuente.slice(1):'—';
+  const docArr = safeArray<DocumentoDinamico>(solActual.docData);
+  const procDataEntries = Object.entries(solActual.procData || {}).filter(([, v]) => Boolean(v?.fechaI || v?.obs));
+  const urlFuente=solActual.linkSecop||solActual.linkDetalle||solActual.linkSecopReg||'';
+  const ebFuente=estadoBadgeColor(solActual.estadoFuente||'');
+  const modalidadDisplay=(()=>{const m=solActual.modalidad?.trim();if(!m||m==='—')return'—';return MMAP_MODALIDAD[m]??m;})();
+  const fuenteDisplay=solActual.fuente?solActual.fuente.charAt(0).toUpperCase()+solActual.fuente.slice(1):'—';
   const esEspecializada=variante==='ESPECIALIZADA';
-  const solE=sol as any;
+  const solE = {
+    nitContacto: safeString(solActual.nitContacto),
+    personaContacto: safeString(solActual.personaContacto),
+    telefonoContacto: safeString(solActual.telefonoContacto),
+    direccionContacto: safeString(solActual.direccionContacto),
+    correoContacto: safeString(solActual.correoContacto),
+  };
+  const estadosBloqueados=['En observación','En proceso','En evaluación','Cerrada'];
+  const asignacionBloqueada=asignaciones.length>0&&estadosBloqueados.includes(String(asignaciones[asignaciones.length-1].estadoAsignacion||''));
 
   const getDocExt=(url:string,nombre?:string)=>{
     const s=(url||'').toLowerCase();const n=(nombre||'').toLowerCase();
@@ -3337,25 +3892,59 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
   };
 
   React.useEffect(()=>{
-    fetch('/api/users').then(r=>r.json()).then(data=>{
-      if(Array.isArray(data)){
-        const todos=data.filter((u:any)=>u.estado==='Activo');
-        const filtered=variante==='COMERCIAL'?todos.filter((u:any)=>u.proceso==='Comercial'):variante==='ESPECIALIZADA'?todos.filter((u:any)=>u.proceso&&u.proceso!=='Comercial'):todos;
-        setUsuarios(filtered);
-      }
+    fetch(`/api/solicitudes/${sol.id}`).then(r=>r.json()).then(data=>{
+      if(data.ok&&data.solicitud)setSolActual(data.solicitud);
     }).catch(()=>{});
-  },[]);
+  },[sol.id]);
+
+  // Carga de usuarios activos disponibles para asignación.
+  React.useEffect(() => {
+    fetch('/api/users')
+      .then(r => r.json())
+      .then(data => {
+        if (!Array.isArray(data)) return;
+
+        const usuariosActivos = safeArray<UsuarioActivo>(data).filter(
+          usuario => safeString(usuario.estado) === 'Activo'
+        );
+
+        const usuariosPorProceso =
+          variante === 'COMERCIAL'
+            ? usuariosActivos.filter(
+                usuario => safeString(usuario.proceso) === 'Comercial'
+              )
+            : variante === 'ESPECIALIZADA'
+              ? usuariosActivos.filter(usuario => {
+                  const procesoUsuario = safeString(usuario.proceso);
+                  return Boolean(procesoUsuario) && procesoUsuario !== 'Comercial';
+                })
+              : usuariosActivos;
+
+        const usuariosAsignables: UsuarioAsignable[] = usuariosPorProceso.map(usuario => ({
+          id: safeNumber(usuario.id),
+          usuario: safeString(usuario.usuario),
+          cargo: safeString(usuario.cargo),
+          entidadGrupo: safeString(usuario.entidadGrupo),
+          rol: safeString(usuario.rol, 'Usuario Final'),
+          estado: safeString(usuario.estado, 'Activo'),
+          proceso: safeString(usuario.proceso),
+        }));
+
+        setUsuarios(usuariosAsignables);
+      })
+      .catch(() => {});
+  }, [variante]);
 
   React.useEffect(()=>{
-    if(!sol.procesoId)return;
+    if(!solActual.procesoId)return;
     setCargandoAdendas(true);
-    fetch(`/api/procesos/${sol.procesoId}/documentos`)
+    fetch(`/api/procesos/${solActual.procesoId}/documentos`)
       .then(r=>r.json())
       .then(data=>{
         if(data.ok&&Array.isArray(data.documentos)){
-          const urlsIniciales=new Set(docArr.map((d:any)=>String(d.ruta||d.url||d.link||'').toLowerCase()).filter(Boolean));
-          const nombresIniciales=new Set(docArr.map((d:any)=>String(d.nombre||d.titulo||'').toLowerCase()).filter(Boolean));
-          const nuevos=data.documentos.filter((d:any)=>{
+          const urlsIniciales=new Set(docArr.map((d: DocumentoDinamico) =>String(d.ruta||d.url||d.link||'').toLowerCase()).filter(Boolean));
+          const nombresIniciales=new Set(docArr.map((d: DocumentoDinamico) =>String(d.nombre||d.titulo||'').toLowerCase()).filter(Boolean));
+          const nuevos=data.documentos.filter((d: DocumentoDinamico) =>{
             const url=String(d.urlDocumento||'').toLowerCase().trim();
             const nombre=String(d.nombre||'').toLowerCase().trim();
             return!(url&&urlsIniciales.has(url))&&!(nombre&&nombresIniciales.has(nombre));
@@ -3365,7 +3954,7 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
       })
       .catch(()=>{})
       .finally(()=>setCargandoAdendas(false));
-  },[sol.procesoId]);
+  },[solActual.procesoId]);
 
   const asignar=async()=>{
     if(!responsable){setError('Selecciona un responsable.');return;}
@@ -3375,12 +3964,14 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
       const ahora=new Date();const pad=(n:number)=>String(n).padStart(2,'0');
       const fechaStr=`${ahora.getFullYear()}-${pad(ahora.getMonth()+1)}-${pad(ahora.getDate())} ${pad(ahora.getHours())}:${pad(ahora.getMinutes())}:${pad(ahora.getSeconds())}`;
       const numAsig=asignaciones.length+1;
-      const nueva={idAsignacion:`ASG-${String(numAsig).padStart(2,'0')}`,solicitudId:sol.id,solicitudNum:sol.id,analistaAsignado:u?.usuario||responsable,analistaCargo:u?.cargo||'',analistaEntidad:u?.entidadGrupo||'',asignadoPor:sesion.usuario||'',asignadoPorCargo:sesion.cargo||'',fechaAsignacion:fechaStr,estadoAsignacion:'Pendiente',estadoBandeja:'pendiente',entidad:sol.entidad||'',codigoProceso:sol.codigoProceso||'',objeto:sol.objeto||'',valor:sol.valor||null,modalidad:sol.modalidad||'',ciudad:sol.ciudad||sol.departamento||'',perfil:sol.perfil||'',fechaVencimiento:sol.fechaVencimiento||null,observacion:''};
+      const nueva={idAsignacion:`ASG-${String(numAsig).padStart(2,'0')}`,solicitudId:sol.id,solicitudNum:sol.id,analistaAsignado:u?.usuario||responsable,analistaCargo:u?.cargo||'',analistaEntidad:u?.entidadGrupo||'',asignadoPor:sesion.usuario||'',asignadoPorCargo:sesion.cargo||'',fechaAsignacion:fechaStr,estadoAsignacion:'Pendiente',estadoBandeja:'pendiente',entidad:solActual.entidad||'',codigoProceso:solActual.codigoProceso||'',objeto:solActual.objeto||'',valor:solActual.valor||null,modalidad:solActual.modalidad||'',ciudad:solActual.ciudad||solActual.departamento||'',perfil:solActual.perfil||'',fechaVencimiento:solActual.fechaVencimiento||null,observacion:''};
       const nuevasAsig=[...asignaciones,nueva];
       const res=await fetch('/api/solicitudes',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:sol.id,estadoSolicitud:'Asignada',asignaciones:nuevasAsig})});
       const data=await res.json();
       if(!res.ok||!data.ok){setError(data.error??'Error al asignar.');return;}
-      onGuardado({...sol,...data.solicitud,estadoSolicitud:'Asignada',asignaciones:nuevasAsig});
+      onGuardado({...solActual,...data.solicitud,estadoSolicitud:'Asignada',asignaciones:nuevasAsig});
+      setModoReasignar(false);
+      setResponsable('');
     }catch{setError('No se pudo conectar.');}
     finally{setAsignando(false);}
   };
@@ -3406,18 +3997,18 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
   return(
     <div style={{display:'flex',flexDirection:'column',height:'100%',overflow:'hidden',background:'#f8fafc'}}>
 
-      {/* BARRA 1 */}
+      {/* Barra de información principal */}
       <div style={{background:'white',borderBottom:'1px solid #e2e8f0',padding:'4px 24px',flexShrink:0,overflow:'hidden'}}>
         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'nowrap' as const,overflow:'hidden'}}>
-          {sol.estadoFuente&&<><MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>} label="Estado" badge={<span style={{display:'inline-flex',alignItems:'center',fontSize:10,fontWeight:600,color:ebFuente.color,background:ebFuente.bg,padding:'1px 7px',borderRadius:999,fontFamily:F}}>{sol.estadoFuente}</span>}/>{sep}</>}
-          {fmtV(sol.valor)&&<><MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>} label="Presupuesto" badge={<span style={{fontWeight:600,color:'#475569',fontFamily:F,fontSize:10}}>{fmtV(sol.valor)}</span>}/>{sep}</>}
+          {solActual.estadoFuente&&<><MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>} label="Estado" badge={<span style={{display:'inline-flex',alignItems:'center',fontSize:10,fontWeight:600,color:ebFuente.color,background:ebFuente.bg,padding:'1px 7px',borderRadius:999,fontFamily:F}}>{solActual.estadoFuente}</span>}/>{sep}</>}
+          {fmtV(solActual.valor)&&<><MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>} label="Presupuesto" badge={<span style={{fontWeight:600,color:'#475569',fontFamily:F,fontSize:10}}>{fmtV(solActual.valor)}</span>}/>{sep}</>}
           {pc&&<><MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><path d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0H5"/></svg>} label="Perfil" badge={<span style={{display:'inline-flex',alignItems:'center',fontSize:10,fontWeight:600,color:'white',background:pc.color,padding:'1px 7px',borderRadius:999,fontFamily:F}}>{pc.label}</span>}/>{sep}</>}
-          {sol.codigoProceso&&<><MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><path d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"/></svg>} label="No. Proceso" badge={<span style={{fontWeight:600,color:'#475569',fontFamily:'monospace',fontSize:10}}>{sol.codigoProceso}</span>}/>{sep}</>}
-          {sol.fechaVencimiento&&<MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>} label="Vencimiento" badge={<span style={{fontWeight:600,color:'#475569',fontFamily:F,fontSize:10}}>{fmtFH(sol.fechaVencimiento)}</span>}/>}
+          {solActual.codigoProceso&&<><MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><path d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"/></svg>} label="No. Proceso" badge={<span style={{fontWeight:600,color:'#475569',fontFamily:'monospace',fontSize:10}}>{solActual.codigoProceso}</span>}/>{sep}</>}
+          {solActual.fechaVencimiento&&<MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>} label="Vencimiento" badge={<span style={{fontWeight:600,color:'#475569',fontFamily:F,fontSize:10}}>{fmtFH(solActual.fechaVencimiento)}</span>}/>}
         </div>
       </div>
 
-      {/* BARRA 2 */}
+      {/* Navegación de secciones */}
       <div style={{background:'white',borderBottom:'1px solid #e2e8f0',padding:'0 24px',flexShrink:0}}>
         <div style={{display:'flex',alignItems:'center',gap:0}}>
           <button onClick={onVolver}
@@ -3439,30 +4030,27 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
         </div>
       </div>
 
-      {/* STEPPER */}
+      {/* Seguimiento del estado */}
       <div style={{background:'white',borderBottom:'1px solid #e2e8f0',padding:'0 24px',flexShrink:0}}>
-        <StepperSolicitud estadoSolicitud={sol.estadoSolicitud||''}/>
+        <StepperSolicitud estadoSolicitud={solActual.estadoSolicitud||''}/>
       </div>
 
-      {/* CUERPO */}
+      {/* Contenido principal */}
       <div style={{flex:1,overflow:'hidden',display:'grid',gridTemplateColumns:'1fr 300px',gap:16,padding:'16px 24px'}}>
 
-        {/* Columna izquierda */}
+        {/* Panel principal */}
         <div style={{display:'flex',flexDirection:'column',gap:12,overflowY:'auto',paddingRight:2,scrollbarWidth:'thin' as const,scrollbarColor:'transparent transparent'}}
           onMouseOver={e=>{(e.currentTarget as HTMLDivElement).style.scrollbarColor='#cbd5e1 transparent';}}
           onMouseOut={e=>{(e.currentTarget as HTMLDivElement).style.scrollbarColor='transparent transparent';}}>
 
-          {/* TAB RESUMEN */}
           {tabActiva==='resumen'&&<>
-            {sol.objeto&&(
+            {solActual.objeto&&(
               <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'12px 14px',flexShrink:0,maxHeight:120,overflowY:'auto'}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:10,fontFamily:F}}>Descripción</div>
-                <p style={{margin:0,fontSize:11.5,color:'#334155',fontFamily:F,lineHeight:1.6,textAlign:'justify' as const}}>{sol.objeto.charAt(0).toUpperCase()+sol.objeto.slice(1)}</p>
+                <p style={{margin:0,fontSize:11.5,color:'#334155',fontFamily:F,lineHeight:1.6,textAlign:'justify' as const}}>{solActual.objeto.charAt(0).toUpperCase()+solActual.objeto.slice(1)}</p>
               </div>
             )}
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,flexShrink:0}}>
-
-              {/* Entidad contratante */}
               <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'14px 16px'}}>
                 <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:10}}>
                   <svg fill="none" stroke="#64748b" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14,flexShrink:0}}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8z"/></svg>
@@ -3470,12 +4058,12 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
                 </div>
                 <div style={{display:'flex',flexDirection:'column' as const,gap:8}}>
                   {esEspecializada&&solE.nitContacto&&<div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>NIT</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:'monospace'}}>{solE.nitContacto}</div></div>}
-                  <div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Organización</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:F}}>{sol.entidad||'—'}</div></div>
+                  <div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Organización</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:F}}>{solActual.entidad||'—'}</div></div>
                   {esEspecializada&&solE.direccionContacto&&<div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Dirección</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:F}}>{solE.direccionContacto}</div></div>}
-                  {sol.ciudad&&<div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Ciudad</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:F}}>{sol.ciudad}</div></div>}
-                  {!esEspecializada&&sol.departamento&&<div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Localización</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:F}}>{sol.departamento}</div></div>}
-                  {esEspecializada&&sol.departamento&&(()=>{
-                    const partes=(sol.departamento||'').split(';').map((s:string)=>s.trim()).filter(Boolean);
+                  {solActual.ciudad&&<div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Ciudad</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:F}}>{solActual.ciudad}</div></div>}
+                  {!esEspecializada&&solActual.departamento&&<div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Localización</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:F}}>{solActual.departamento}</div></div>}
+                  {esEspecializada&&solActual.departamento&&(()=>{
+                    const partes=(solActual.departamento||'').split(';').map((s:string)=>s.trim()).filter(Boolean);
                     const deptos=partes.map((p:string)=>p.split(':')[0].trim()).filter(Boolean).join(', ');
                     const ciudad=partes.map((p:string)=>p.includes(':')?p.split(':').slice(1).join(':').trim():'').filter(Boolean).join(', ');
                     return(<>
@@ -3485,8 +4073,6 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
                   })()}
                 </div>
               </div>
-
-              {/* Información del contrato */}
               <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'14px 16px'}}>
                 <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:10}}>
                   <svg fill="none" stroke="#64748b" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14,flexShrink:0}}><path d="M9 12h6m-6 4h6M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
@@ -3506,8 +4092,6 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
                   {esEspecializada&&solE.telefonoContacto&&<div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Teléfono</div><div style={{fontSize:12,color:'#0f172a',fontFamily:F}}>{solE.telefonoContacto}</div></div>}
                 </div>
               </div>
-
-              {/* Registro */}
               <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'14px 16px'}}>
                 <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:10}}>
                   <svg fill="none" stroke="#64748b" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14,flexShrink:0}}><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
@@ -3516,23 +4100,21 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
                 <div style={{display:'flex',flexDirection:'column' as const,gap:8}}>
                   <div>
                     <div style={{fontSize:10,color:'#94a3b8',fontFamily:F,marginBottom:2}}>Registrado por</div>
-                    <div style={{fontSize:12.5,fontWeight:600,color:'#0f172a',fontFamily:F}}>{sol.usuarioRegistro||'—'}</div>
-                    {sol.cargoRegistro&&<div style={{fontSize:11,color:'#64748b',fontFamily:F,marginTop:1}}>{sol.cargoRegistro}</div>}
+                    <div style={{fontSize:12.5,fontWeight:600,color:'#0f172a',fontFamily:F}}>{solActual.usuarioRegistro||'—'}</div>
+                    {solActual.cargoRegistro&&<div style={{fontSize:11,color:'#64748b',fontFamily:F,marginTop:1}}>{solActual.cargoRegistro}</div>}
                   </div>
-                  <div><div style={{fontSize:10,color:'#94a3b8',fontFamily:F,marginBottom:2}}>Fecha de registro</div><div style={{fontSize:12,fontWeight:600,color:'#0f172a',fontFamily:F}}>{fmtFH(sol.createdAt)}</div></div>
-                  {sol.sqrNumero&&<div><div style={{fontSize:10,color:'#94a3b8',fontFamily:F,marginBottom:2}}>No. SQR</div><div style={{fontSize:12,fontWeight:600,color:'#475569',fontFamily:'monospace'}}>{sol.sqrNumero}</div></div>}
+                  <div><div style={{fontSize:10,color:'#94a3b8',fontFamily:F,marginBottom:2}}>Fecha de registro</div><div style={{fontSize:12,fontWeight:600,color:'#0f172a',fontFamily:F}}>{fmtFH(solActual.createdAt)}</div></div>
+                  {solActual.sqrNumero&&<div><div style={{fontSize:10,color:'#94a3b8',fontFamily:F,marginBottom:2}}>No. SQR</div><div style={{fontSize:12,fontWeight:600,color:'#475569',fontFamily:'monospace'}}>{solActual.sqrNumero}</div></div>}
                 </div>
               </div>
-
             </div>
           </>}
 
-          {/* TAB REQUISITOS */}
           {tabActiva==='requisitos'&&(
             <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'20px 24px',flexShrink:0}}>
               <div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:16,fontFamily:F}}>Requisitos del proceso</div>
-              {sol.observacion
-                ?<div style={{fontSize:13,color:FC,fontFamily:F,lineHeight:1.7,whiteSpace:'pre-wrap' as const}}>{sol.observacion}</div>
+              {solActual.observacion
+                ?<div style={{fontSize:13,color:FC,fontFamily:F,lineHeight:1.7,whiteSpace:'pre-wrap' as const}}>{solActual.observacion}</div>
                 :<div style={{textAlign:'center' as const,padding:'40px 0',color:'#94a3b8'}}>
                   <svg fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" style={{width:32,height:32,margin:'0 auto 10px',display:'block',opacity:.4}}><path d="M9 12h6m-6 4h6M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
                   <div style={{fontSize:13,fontFamily:F}}>Sin requisitos registrados</div>
@@ -3541,15 +4123,59 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
             </div>
           )}
 
-          {/* TAB CRONOGRAMA */}
           {tabActiva==='cronograma'&&(
             <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'24px 28px',flexShrink:0}}>
               <div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.08em',marginBottom:20,fontFamily:F}}>Cronograma de fechas</div>
-              {(sol.fechaPublicacion||sol.fechaVencimiento||procDataEntries.length>0)
+              {(solActual.fechaPublicacion||solActual.fechaVencimiento||procDataEntries.length>0)
                 ?<div style={{display:'flex',flexDirection:'column' as const}}>
-                  {sol.fechaPublicacion&&(<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:'1px solid #f1f5f9'}}><span style={{fontSize:11,color:'#374151',fontFamily:F}}>Fecha de publicación</span><span style={{fontSize:11,fontWeight:700,color:FC_DARK,fontFamily:F,whiteSpace:'nowrap' as const}}>{fmtFH(sol.fechaPublicacion)}</span></div>)}
-                  {sol.fechaVencimiento&&(<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:procDataEntries.length>0?'1px solid #f1f5f9':'none'}}><span style={{fontSize:11,color:'#374151',fontFamily:F}}>Fecha de vencimiento</span><span style={{fontSize:11,fontWeight:700,color:'#dc2626',fontFamily:F,whiteSpace:'nowrap' as const}}>{fmtFH(sol.fechaVencimiento)}</span></div>)}
-                  {procDataEntries.map(([k,v],i)=>{const vv=v as any;return(<div key={k} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:i<procDataEntries.length-1?'1px solid #f1f5f9':'none'}}><span style={{fontSize:11,color:'#374151',fontFamily:F,flex:1,paddingRight:24}}>{vv.obs||`Etapa ${i+1}`}</span><span style={{fontSize:11,fontWeight:700,color:FC_DARK,fontFamily:F,whiteSpace:'nowrap' as const,flexShrink:0}}>{vv.fechaI}{vv.fechaF&&vv.fechaF!==vv.fechaI?` → ${vv.fechaF}`:''}</span></div>);})}
+                  {solActual.fechaPublicacion&&(<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:'1px solid #f1f5f9'}}><span style={{fontSize:11,color:'#374151',fontFamily:F}}>Fecha de publicación</span><span style={{fontSize:11,fontWeight:700,color:FC_DARK,fontFamily:F,whiteSpace:'nowrap' as const}}>{fmtFH(solActual.fechaPublicacion)}</span></div>)}
+                  {solActual.fechaVencimiento&&(<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:procDataEntries.length>0?'1px solid #f1f5f9':'none'}}><span style={{fontSize:11,color:'#374151',fontFamily:F}}>Fecha de vencimiento</span><span style={{fontSize:11,fontWeight:700,color:'#dc2626',fontFamily:F,whiteSpace:'nowrap' as const}}>{fmtFH(solActual.fechaVencimiento)}</span></div>)}
+                  {procDataEntries.map(([k, v], i) => {
+  const vv = safeRecord(v);
+  const obsCronograma = safeString(vv.obs, `Etapa ${i + 1}`);
+  const fechaInicioCronograma = safeString(vv.fechaI);
+  const fechaFinCronograma = safeString(vv.fechaF);
+
+  return (
+    <div
+      key={k}
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '12px 0',
+        borderBottom: i < procDataEntries.length - 1 ? '1px solid #f1f5f9' : 'none',
+      }}
+    >
+      <span
+        style={{
+          fontSize: 11,
+          color: '#374151',
+          fontFamily: F,
+          flex: 1,
+          paddingRight: 24,
+        }}
+      >
+        {obsCronograma}
+      </span>
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          color: FC_DARK,
+          fontFamily: F,
+          whiteSpace: 'nowrap' as const,
+          flexShrink: 0,
+        }}
+      >
+        {fechaInicioCronograma}
+        {fechaFinCronograma && fechaFinCronograma !== fechaInicioCronograma
+          ? ` → ${fechaFinCronograma}`
+          : ''}
+      </span>
+    </div>
+  );
+})}
                 </div>
                 :<div style={{textAlign:'center' as const,padding:'40px 0',color:'#94a3b8'}}>
                   <svg fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" style={{width:32,height:32,margin:'0 auto 10px',display:'block',opacity:.4}}><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
@@ -3559,160 +4185,44 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
             </div>
           )}
 
-          {/* TAB DOCUMENTACIÓN */}
           {tabActiva==='documentacion'&&(
             <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'16px 20px',flexShrink:0}}>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.08em',fontFamily:F}}>Documentos {docArr.length>0&&`(${docArr.length})`}</div>
                 <div style={{display:'flex',alignItems:'center',gap:6}}>
-                  {docArr.some((d:any)=>String(d.ruta||d.url||d.link||''))&&(
-                    <button style={{display:'inline-flex',alignItems:'center',gap:5,height:28,padding:'0 12px',borderRadius:7,border:'1.5px solid #e2e8f0',background:'white',color:'#374151',fontSize:11.5,fontWeight:500,fontFamily:F,cursor:'pointer',transition:'all .15s'}}
-                      onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor='#1e5799';(e.currentTarget as HTMLButtonElement).style.color='#1e5799';}}
-                      onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor='#e2e8f0';(e.currentTarget as HTMLButtonElement).style.color='#374151';}}>
-                      <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                      Descargar todo
-                    </button>
-                  )}
-                  <div style={{display:'flex',border:'1.5px solid #e2e8f0',borderRadius:7,overflow:'hidden'}}>
-                    {([{v:'grid'},{v:'list'}] as {v:'grid'|'list'}[]).map(({v})=>(
-                      <button key={v} onClick={()=>setDocVista(v)}
-                        style={{width:28,height:26,border:'none',background:docVista===v?'#1e5799':'white',color:docVista===v?'white':'#64748b',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'all .15s'}}>
-                        {v==='grid'
-                          ?<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-                          :<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-                        }
-                      </button>
-                    ))}
-                  </div>
+                  {docArr.some((d: DocumentoDinamico) =>String(d.ruta||d.url||d.link||''))&&(<button style={{display:'inline-flex',alignItems:'center',gap:5,height:28,padding:'0 12px',borderRadius:7,border:'1.5px solid #e2e8f0',background:'white',color:'#374151',fontSize:11.5,fontWeight:500,fontFamily:F,cursor:'pointer',transition:'all .15s'}} onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor='#1e5799';(e.currentTarget as HTMLButtonElement).style.color='#1e5799';}} onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor='#e2e8f0';(e.currentTarget as HTMLButtonElement).style.color='#374151';}}><svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Descargar todo</button>)}
+                  <div style={{display:'flex',border:'1.5px solid #e2e8f0',borderRadius:7,overflow:'hidden'}}>{([{v:'grid'},{v:'list'}] as {v:'grid'|'list'}[]).map(({v})=>(<button key={v} onClick={()=>setDocVista(v)} style={{width:28,height:26,border:'none',background:docVista===v?'#1e5799':'white',color:docVista===v?'white':'#64748b',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'all .15s'}}>{v==='grid'?<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>:<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>}</button>))}</div>
                 </div>
               </div>
-              {docArr.length>0
-                ?docVista==='grid'
-                  ?<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(90px,1fr))',gap:10}}>
-                    {docArr.map((d:any,i:number)=>{
-                      const url=String(d.ruta||d.url||d.link||'');
-                      const ext=getDocExt(url,String(d.nombre||d.titulo||''));
-                      return(
-                        <a key={i} href={url||'#'} target="_blank" rel="noopener noreferrer"
-                          style={{display:'flex',flexDirection:'column' as const,alignItems:'center',gap:6,padding:'10px 6px',border:'1.5px solid #f1f5f9',borderRadius:10,textDecoration:'none',background:'white',transition:'all .15s'}}
-                          onMouseOver={e=>{(e.currentTarget as HTMLAnchorElement).style.borderColor='#1e5799';(e.currentTarget as HTMLAnchorElement).style.background='#f8fbff';}}
-                          onMouseOut={e=>{(e.currentTarget as HTMLAnchorElement).style.borderColor='#f1f5f9';(e.currentTarget as HTMLAnchorElement).style.background='white';}}>
-                          <div style={{position:'relative' as const,width:40,height:48}}>
-                            <div style={{width:40,height:48,borderRadius:'3px 10px 3px 3px',background:ext.bg,border:`1.5px solid ${ext.color}30`,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:6}}>
-                              <div style={{position:'absolute' as const,top:0,right:0,width:10,height:10,background:'white',borderLeft:`1.5px solid ${ext.color}30`,borderBottom:`1.5px solid ${ext.color}30`,borderRadius:'0 0 0 3px'}}/>
-                              <span style={{fontSize:7,fontWeight:800,color:ext.color,fontFamily:F,letterSpacing:'0.03em'}}>{ext.label}</span>
-                            </div>
-                          </div>
-                          <div style={{fontSize:10,fontWeight:500,color:'#334155',fontFamily:F,textAlign:'center' as const,lineHeight:1.3,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const,maxWidth:'100%',wordBreak:'break-word' as const}}>
-                            {String(d.nombre||d.titulo||`Doc ${i+1}`)}
-                          </div>
-                        </a>
-                      );
-                    })}
-                  </div>
-                  :<div style={{display:'flex',flexDirection:'column' as const}}>
-                    {docArr.map((d:any,i:number)=>{
-                      const url=String(d.ruta||d.url||d.link||'');
-                      const ext=getDocExt(url,String(d.nombre||d.titulo||''));
-                      const nombre=String(d.nombre||d.titulo||`Documento ${i+1}`).toUpperCase();
-                      return(
-                        <div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'7px 0',borderBottom:i<docArr.length-1?'1px solid #f8fafc':'none'}}>
-                          <div style={{width:28,height:34,borderRadius:'2px 7px 2px 2px',background:ext.bg,border:`1px solid ${ext.color}20`,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:4,position:'relative' as const,flexShrink:0}}>
-                            <div style={{position:'absolute' as const,top:0,right:0,width:7,height:7,background:'white',borderLeft:`1px solid ${ext.color}20`,borderBottom:`1px solid ${ext.color}20`,borderRadius:'0 0 0 2px'}}/>
-                            <span style={{fontSize:6,fontWeight:800,color:ext.color,fontFamily:F,letterSpacing:'0.02em'}}>{ext.label}</span>
-                          </div>
-                          <div style={{flex:1,minWidth:0}}>
-                            <div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const,fontFamily:F}}>{nombre}</div>
-                          </div>
-                          <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}>
-                            <span style={{fontSize:10,fontWeight:600,color:'#64748b',fontFamily:F,background:'#f1f5f9',padding:'2px 7px',borderRadius:5,border:'1px solid #e2e8f0'}}>{ext.label}</span>
-                            {url&&(
-                              <a href={url} target="_blank" rel="noopener noreferrer"
-                                style={{display:'inline-flex',alignItems:'center',gap:5,height:28,padding:'0 12px',borderRadius:7,background:'#1e5799',color:'white',fontSize:11,fontWeight:700,textDecoration:'none',fontFamily:F,transition:'all .15s',flexShrink:0}}
-                                onMouseOver={e=>{(e.currentTarget as HTMLAnchorElement).style.background='#174a85';}}
-                                onMouseOut={e=>{(e.currentTarget as HTMLAnchorElement).style.background='#1e5799';}}>
-                                <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                                Descargar
-                              </a>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                :<div style={{textAlign:'center' as const,padding:'40px 0',color:'#94a3b8'}}>
-                  <svg fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" style={{width:32,height:32,margin:'0 auto 10px',display:'block',opacity:.4}}><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
-                  <div style={{fontSize:13,fontFamily:F}}>Sin documentos disponibles</div>
-                </div>
-              }
+              {docArr.length>0?docVista==='grid'?<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(90px,1fr))',gap:10}}>{docArr.map((d: DocumentoDinamico, i: number) =>{const url=String(d.ruta||d.url||d.link||'');const ext=getDocExt(url,String(d.nombre||d.titulo||''));return(<a key={i} href={url||'#'} target="_blank" rel="noopener noreferrer" style={{display:'flex',flexDirection:'column' as const,alignItems:'center',gap:6,padding:'10px 6px',border:'1.5px solid #f1f5f9',borderRadius:10,textDecoration:'none',background:'white',transition:'all .15s'}} onMouseOver={e=>{(e.currentTarget as HTMLAnchorElement).style.borderColor='#1e5799';(e.currentTarget as HTMLAnchorElement).style.background='#f8fbff';}} onMouseOut={e=>{(e.currentTarget as HTMLAnchorElement).style.borderColor='#f1f5f9';(e.currentTarget as HTMLAnchorElement).style.background='white';}}><div style={{position:'relative' as const,width:40,height:48}}><div style={{width:40,height:48,borderRadius:'3px 10px 3px 3px',background:ext.bg,border:`1.5px solid ${ext.color}30`,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:6}}><div style={{position:'absolute' as const,top:0,right:0,width:10,height:10,background:'white',borderLeft:`1.5px solid ${ext.color}30`,borderBottom:`1.5px solid ${ext.color}30`,borderRadius:'0 0 0 3px'}}/><span style={{fontSize:7,fontWeight:800,color:ext.color,fontFamily:F,letterSpacing:'0.03em'}}>{ext.label}</span></div></div><div style={{fontSize:10,fontWeight:500,color:'#334155',fontFamily:F,textAlign:'center' as const,lineHeight:1.3,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const,maxWidth:'100%',wordBreak:'break-word' as const}}>{String(d.nombre||d.titulo||`Doc ${i+1}`)}</div></a>);})}</div>:<div style={{display:'flex',flexDirection:'column' as const}}>{docArr.map((d: DocumentoDinamico, i: number) =>{const url=String(d.ruta||d.url||d.link||'');const ext=getDocExt(url,String(d.nombre||d.titulo||''));const nombre=String(d.nombre||d.titulo||`Documento ${i+1}`).toUpperCase();return(<div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'7px 0',borderBottom:i<docArr.length-1?'1px solid #f8fafc':'none'}}><div style={{width:28,height:34,borderRadius:'2px 7px 2px 2px',background:ext.bg,border:`1px solid ${ext.color}20`,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:4,position:'relative' as const,flexShrink:0}}><div style={{position:'absolute' as const,top:0,right:0,width:7,height:7,background:'white',borderLeft:`1px solid ${ext.color}20`,borderBottom:`1px solid ${ext.color}20`,borderRadius:'0 0 0 2px'}}/><span style={{fontSize:6,fontWeight:800,color:ext.color,fontFamily:F,letterSpacing:'0.02em'}}>{ext.label}</span></div><div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const,fontFamily:F}}>{nombre}</div></div><div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}><span style={{fontSize:10,fontWeight:600,color:'#64748b',fontFamily:F,background:'#f1f5f9',padding:'2px 7px',borderRadius:5,border:'1px solid #e2e8f0'}}>{ext.label}</span>{url&&(<a href={url} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:5,height:28,padding:'0 12px',borderRadius:7,background:'#1e5799',color:'white',fontSize:11,fontWeight:700,textDecoration:'none',fontFamily:F,transition:'all .15s',flexShrink:0}} onMouseOver={e=>{(e.currentTarget as HTMLAnchorElement).style.background='#174a85';}} onMouseOut={e=>{(e.currentTarget as HTMLAnchorElement).style.background='#1e5799';}}><svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Descargar</a>)}</div></div>);})}</div>:<div style={{textAlign:'center' as const,padding:'40px 0',color:'#94a3b8'}}><svg fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" style={{width:32,height:32,margin:'0 auto 10px',display:'block',opacity:.4}}><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg><div style={{fontSize:13,fontFamily:F}}>Sin documentos disponibles</div></div>}
             </div>
           )}
 
-          {/* TAB ADENDAS */}
           {tabActiva==='adendas'&&(
             <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'16px 18px',flexShrink:0}}>
               <div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:12,fontFamily:F,display:'flex',alignItems:'center',gap:8}}>
                 Adendas
                 {adendas.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#1e5799',color:'white',padding:'1px 7px',borderRadius:999}}>{adendas.length}</span>}
               </div>
-              {cargandoAdendas
-                ?<div style={{fontSize:12,color:'#94a3b8',fontFamily:F}}>Cargando adendas…</div>
-                :<div style={{display:'flex',flexDirection:'column' as const,gap:0}}>
-                  {adendas.length===0&&<div style={{textAlign:'center' as const,padding:'20px 0',color:'#94a3b8'}}><div style={{fontSize:12,fontFamily:F}}>Sin adendas detectadas</div></div>}
-                  {adendas.map((d,i)=>{
-                    const url=d.urlDocumento||'';
-                    const ext=getDocExt(url,d.nombre||'');
-                    const fecha=d.fechaDetectado?new Date(d.fechaDetectado).toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'}):'';
-                    return(
-                      <div key={d.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 0',borderBottom:i<adendas.length-1?'1px solid #f8fafc':'none'}}>
-                        <div style={{width:28,height:34,borderRadius:'2px 7px 2px 2px',background:ext.bg,border:`1px solid ${ext.color}20`,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:4,position:'relative' as const,flexShrink:0}}>
-                          <div style={{position:'absolute' as const,top:0,right:0,width:7,height:7,background:'white',borderLeft:`1px solid ${ext.color}20`,borderBottom:`1px solid ${ext.color}20`,borderRadius:'0 0 0 2px'}}/>
-                          <span style={{fontSize:6,fontWeight:800,color:ext.color,fontFamily:F}}>{ext.label}</span>
-                        </div>
-                        <div style={{flex:1,minWidth:0}}>
-                          <div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const,fontFamily:F}}>{d.nombre||'Sin nombre'}</div>
-                          {fecha&&<div style={{fontSize:10,color:'#94a3b8',fontFamily:F,marginTop:1}}>Detectado: {fecha}</div>}
-                        </div>
-                        {url&&(
-                          <a href={url} target="_blank" rel="noopener noreferrer"
-                            style={{display:'inline-flex',alignItems:'center',gap:5,height:28,padding:'0 12px',borderRadius:7,background:'#1e5799',color:'white',fontSize:11,fontWeight:700,textDecoration:'none',fontFamily:F,transition:'all .15s',flexShrink:0}}
-                            onMouseOver={e=>{(e.currentTarget as HTMLAnchorElement).style.background='#174a85';}}
-                            onMouseOut={e=>{(e.currentTarget as HTMLAnchorElement).style.background='#1e5799';}}>
-                            <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                            Descargar
-                          </a>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              }
+              {cargandoAdendas?<div style={{fontSize:12,color:'#94a3b8',fontFamily:F}}>Cargando adendas…</div>:<div style={{display:'flex',flexDirection:'column' as const,gap:0}}>{adendas.length===0&&<div style={{textAlign:'center' as const,padding:'20px 0',color:'#94a3b8'}}><div style={{fontSize:12,fontFamily:F}}>Sin adendas detectadas</div></div>}{adendas.map((d,i)=>{const url=d.urlDocumento||'';const ext=getDocExt(url,d.nombre||'');const fecha=d.fechaDetectado?new Date(d.fechaDetectado).toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'}):'';return(<div key={d.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 0',borderBottom:i<adendas.length-1?'1px solid #f8fafc':'none'}}><div style={{width:28,height:34,borderRadius:'2px 7px 2px 2px',background:ext.bg,border:`1px solid ${ext.color}20`,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:4,position:'relative' as const,flexShrink:0}}><div style={{position:'absolute' as const,top:0,right:0,width:7,height:7,background:'white',borderLeft:`1px solid ${ext.color}20`,borderBottom:`1px solid ${ext.color}20`,borderRadius:'0 0 0 2px'}}/><span style={{fontSize:6,fontWeight:800,color:ext.color,fontFamily:F}}>{ext.label}</span></div><div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const,fontFamily:F}}>{d.nombre||'Sin nombre'}</div>{fecha&&<div style={{fontSize:10,color:'#94a3b8',fontFamily:F,marginTop:1}}>Detectado: {fecha}</div>}</div>{url&&(<a href={url} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:5,height:28,padding:'0 12px',borderRadius:7,background:'#1e5799',color:'white',fontSize:11,fontWeight:700,textDecoration:'none',fontFamily:F,transition:'all .15s',flexShrink:0}} onMouseOver={e=>{(e.currentTarget as HTMLAnchorElement).style.background='#174a85';}} onMouseOut={e=>{(e.currentTarget as HTMLAnchorElement).style.background='#1e5799';}}><svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Descargar</a>)}</div>);})}</div>}
             </div>
           )}
-
         </div>
 
-        {/* Columna derecha */}
+        {/* Panel lateral de acciones */}
         <div style={{display:'flex',flexDirection:'column',gap:10}}>
-
           {esEspecializada?(
-            <button style={{width:'100%',height:38,borderRadius:10,background:'#1e5799',color:'white',border:'none',fontSize:13,fontWeight:600,fontFamily:F,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,transition:'all .15s'}}
-              onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#174a85';}}
-              onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='#1e5799';}}>
+            <button style={{width:'100%',height:38,borderRadius:10,background:'#1e5799',color:'white',border:'none',fontSize:13,fontWeight:600,fontFamily:F,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,transition:'all .15s'}} onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#174a85';}} onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='#1e5799';}}>
               <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2M12 12v4m0 0l-2-2m2 2l2-2"/></svg>
               Visita técnica
             </button>
           ):(
             <>
-              <button style={{width:'100%',height:38,borderRadius:10,background:'white',color:'#1e5799',border:'1.5px solid #1e5799',fontSize:13,fontWeight:600,fontFamily:F,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,transition:'all .15s'}}
-                onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#eff6ff';}}
-                onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';}}>
+              <button style={{width:'100%',height:38,borderRadius:10,background:'white',color:'#1e5799',border:'1.5px solid #1e5799',fontSize:13,fontWeight:600,fontFamily:F,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,transition:'all .15s'}} onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#eff6ff';}} onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';}}>
                 <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
                 Ver documento IA
               </button>
-              <button style={{width:'100%',height:38,borderRadius:10,background:'white',color:'#1e5799',border:'1.5px solid #1e5799',fontSize:13,fontWeight:600,fontFamily:F,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,transition:'all .15s'}}
-                onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#eff6ff';}}
-                onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';}}>
+              <button style={{width:'100%',height:38,borderRadius:10,background:'white',color:'#1e5799',border:'1.5px solid #1e5799',fontSize:13,fontWeight:600,fontFamily:F,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,transition:'all .15s'}} onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#eff6ff';}} onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';}}>
                 <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
                 Ver licitaciones similares
               </button>
@@ -3721,68 +4231,134 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
 
           <div style={{height:1,background:'#f1f5f9',margin:'2px 0'}}/>
 
-          <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'14px'}}>
-            <div style={{fontSize:10,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:10,fontFamily:F}}>Asignar responsable</div>
-            <div style={{position:'relative' as const}}>
-              <select value={responsable} onChange={e=>setResponsable(e.target.value)}
-                style={{width:'100%',height:34,border:'1.5px solid #e2e8f0',borderRadius:8,padding:'0 32px 0 10px',fontSize:12,fontFamily:F,color:responsable?FC_DARK:'#94a3b8',background:'white',outline:'none',boxSizing:'border-box' as const,appearance:'none' as const,cursor:'pointer'}}>
-                <option value="">— Seleccione —</option>
-                {usuarios.map(u=><option key={u.id} value={u.usuario}>{u.usuario} · {u.cargo}</option>)}
-              </select>
-              <div style={{position:'absolute' as const,right:10,top:'50%',transform:'translateY(-50%)',pointerEvents:'none' as const,color:'#94a3b8'}}>
-                <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:13,height:13}}><path d="M6 9l6 6 6-6"/></svg>
+          {asignaciones.length>0&&(!modoReasignar||asignacionBloqueada)?(
+            <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:10,padding:'12px 14px'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#15803d',textTransform:'uppercase' as const,letterSpacing:'0.07em',fontFamily:F}}>Responsables asignados</div>
+                {!asignacionBloqueada&&(
+                  <button onClick={()=>setModoReasignar(true)}
+                    style={{fontSize:10,fontWeight:600,color:'#1e5799',background:'white',border:'1px solid #1e5799',borderRadius:6,padding:'2px 8px',cursor:'pointer',fontFamily:F}}
+                    onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#eff6ff';}}
+                    onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';}}>
+                    + Agregar
+                  </button>
+                )}
+                {asignacionBloqueada&&(
+                  <span style={{fontSize:10,color:'#94a3b8',fontFamily:F,fontStyle:'italic'}}>En gestión</span>
+                )}
+              </div>
+              <div style={{display:'flex',flexDirection:'column' as const,gap:6}}>
+                {asignaciones.map((a,i)=>(
+                  <div key={i} style={{display:'flex',alignItems:'center',gap:8}}>
+                    <div style={{width:24,height:24,borderRadius:'50%',background:'#15803d',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:700,flexShrink:0,fontFamily:F}}>{String(a.analistaAsignado||'?').slice(0,2).toUpperCase()}</div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:12,fontWeight:600,color:'#14532d',fontFamily:F,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const}}>{String(a.analistaAsignado||'—')}</div>
+                      <div style={{fontSize:10,color:'#15803d',fontFamily:F}}>{String(a.analistaCargo||'')} · {String(a.idAsignacion||'')}</div>
+                    </div>
+                    {!asignacionBloqueada&&(
+                      <button onClick={async()=>{
+                        const nuevasAsig=asignaciones.filter((_,idx)=>idx!==i);
+                        const nuevoEstado=nuevasAsig.length===0?'En revisión':solActual.estadoSolicitud||'En revisión';
+                        const res=await fetch('/api/solicitudes',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:sol.id,estadoSolicitud:nuevoEstado,asignaciones:nuevasAsig})});
+                        const data=await res.json();
+                        if(res.ok&&data.ok){
+                          const updated={...solActual,...data.solicitud,asignaciones:nuevasAsig,estadoSolicitud:nuevoEstado};
+                          setSolActual(updated);
+                          onGuardado(updated);
+                        }
+                      }}
+                        style={{width:20,height:20,borderRadius:'50%',border:'1px solid #bbf7d0',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8',padding:0,flexShrink:0}}
+                        onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor='#fca5a5';(e.currentTarget as HTMLButtonElement).style.color='#ef4444';}}
+                        onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor='#bbf7d0';(e.currentTarget as HTMLButtonElement).style.color='#94a3b8';}}>
+                        <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M18 6L6 18M6 6l12 12"/></svg>
+                      </button>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
-            {responsable&&(()=>{
-              const u=usuarios.find(x=>x.usuario===responsable);
-              if(!u)return null;
-              return(
-                <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8,padding:'7px 10px',background:'#f8fafc',borderRadius:7,border:'1px solid #f1f5f9'}}>
-                  <div style={{width:26,height:26,borderRadius:'50%',background:'#1e5799',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700,flexShrink:0,fontFamily:F}}>{u.usuario.slice(0,2).toUpperCase()}</div>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:12,fontWeight:600,color:FC_DARK,fontFamily:F,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const}}>{u.usuario}</div>
-                    <div style={{fontSize:10.5,color:FC_LABEL,fontFamily:F}}>{u.cargo}</div>
-                  </div>
-                  <button onClick={()=>setResponsable('')}
-                    style={{width:20,height:20,borderRadius:'50%',border:'1px solid #e2e8f0',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8',padding:0,flexShrink:0}}
-                    onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor='#fca5a5';(e.currentTarget as HTMLButtonElement).style.color='#ef4444';}}
-                    onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor='#e2e8f0';(e.currentTarget as HTMLButtonElement).style.color='#94a3b8';}}>
-                    <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M18 6L6 18M6 6l12 12"/></svg>
+          ):(
+            <>
+              {modoReasignar&&(
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}}>
+                  <span style={{fontSize:11,fontWeight:600,color:FC_DARK,fontFamily:F}}>Agregar responsable</span>
+                  <button onClick={()=>{setModoReasignar(false);setResponsable('');setError('');}}
+                    style={{fontSize:10,color:'#64748b',background:'none',border:'none',cursor:'pointer',fontFamily:F}}>
+                    Cancelar
                   </button>
                 </div>
-              );
-            })()}
-            {error&&<div style={{fontSize:11.5,color:'#dc2626',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,padding:'5px 9px',marginTop:8,fontFamily:F}}>⚠️ {error}</div>}
-          </div>
-
-          <button onClick={asignar} disabled={asignando||!responsable}
-            style={{width:'100%',height:40,borderRadius:10,background:asignando||!responsable?'#e2e8f0':'#1e5799',color:asignando||!responsable?'#94a3b8':'white',border:'none',fontSize:13,fontWeight:700,fontFamily:F,cursor:asignando||!responsable?'not-allowed':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,transition:'all .15s',boxShadow:asignando||!responsable?'none':'0 2px 8px rgba(30,87,153,0.15)'}}
-            onMouseOver={e=>{if(!asignando&&responsable)(e.currentTarget as HTMLButtonElement).style.background='#174a85';}}
-            onMouseOut={e=>{if(!asignando&&responsable)(e.currentTarget as HTMLButtonElement).style.background='#1e5799';}}>
-            <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z"/></svg>
-            {asignando?'Asignando…':'Asignar proceso'}
-          </button>
-
+              )}
+              <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'14px'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:10,fontFamily:F}}>Asignar responsable</div>
+                <div style={{position:'relative' as const}}>
+                  <select value={responsable} onChange={e=>setResponsable(e.target.value)}
+                    style={{width:'100%',height:34,border:'1.5px solid #e2e8f0',borderRadius:8,padding:'0 32px 0 10px',fontSize:12,fontFamily:F,color:responsable?FC_DARK:'#94a3b8',background:'white',outline:'none',boxSizing:'border-box' as const,appearance:'none' as const,cursor:'pointer'}}>
+                    <option value="">— Seleccione —</option>
+                    {usuarios.map(u=><option key={u.id} value={u.usuario}>{u.usuario} · {u.cargo}</option>)}
+                  </select>
+                  <div style={{position:'absolute' as const,right:10,top:'50%',transform:'translateY(-50%)',pointerEvents:'none' as const,color:'#94a3b8'}}>
+                    <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:13,height:13}}><path d="M6 9l6 6 6-6"/></svg>
+                  </div>
+                </div>
+                {responsable&&(()=>{
+                  const u=usuarios.find(x=>x.usuario===responsable);
+                  if(!u)return null;
+                  return(
+                    <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8,padding:'7px 10px',background:'#f8fafc',borderRadius:7,border:'1px solid #f1f5f9'}}>
+                      <div style={{width:26,height:26,borderRadius:'50%',background:'#1e5799',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700,flexShrink:0,fontFamily:F}}>{u.usuario.slice(0,2).toUpperCase()}</div>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:12,fontWeight:600,color:FC_DARK,fontFamily:F,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const}}>{u.usuario}</div>
+                        <div style={{fontSize:10.5,color:FC_LABEL,fontFamily:F}}>{u.cargo}</div>
+                      </div>
+                      <button onClick={()=>setResponsable('')}
+                        style={{width:20,height:20,borderRadius:'50%',border:'1px solid #e2e8f0',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8',padding:0,flexShrink:0}}
+                        onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor='#fca5a5';(e.currentTarget as HTMLButtonElement).style.color='#ef4444';}}
+                        onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.borderColor='#e2e8f0';(e.currentTarget as HTMLButtonElement).style.color='#94a3b8';}}>
+                        <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M18 6L6 18M6 6l12 12"/></svg>
+                      </button>
+                    </div>
+                  );
+                })()}
+                {error&&<div style={{fontSize:11.5,color:'#dc2626',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,padding:'5px 9px',marginTop:8,fontFamily:F}}>⚠️ {error}</div>}
+              </div>
+              <button onClick={asignar} disabled={asignando||!responsable}
+                style={{width:'100%',height:40,borderRadius:10,background:asignando||!responsable?'#e2e8f0':'#1e5799',color:asignando||!responsable?'#94a3b8':'white',border:'none',fontSize:13,fontWeight:700,fontFamily:F,cursor:asignando||!responsable?'not-allowed':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,transition:'all .15s',boxShadow:asignando||!responsable?'none':'0 2px 8px rgba(30,87,153,0.15)'}}
+                onMouseOver={e=>{if(!asignando&&responsable)(e.currentTarget as HTMLButtonElement).style.background='#174a85';}}
+                onMouseOut={e=>{if(!asignando&&responsable)(e.currentTarget as HTMLButtonElement).style.background='#1e5799';}}>
+                <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z"/></svg>
+                {asignando?'Asignando…':'Asignar proceso'}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function VistFichaBusqueda({sol,sesion,onVolver,onGestionar}:{sol:Solicitud;sesion:Sesion;onVolver:()=>void;onGestionar:()=>Promise<void>}){
+function VistFichaBusqueda({sol,sesion,onVolver,onGestionar,puedeGestionar=true}:{sol:Solicitud;sesion:Sesion;onVolver:()=>void;onGestionar:()=>Promise<void>;puedeGestionar?:boolean}){
   const [guardando,setGuardando]=React.useState(false);
   const [error,setError]=React.useState('');
   const [tabActiva,setTabActiva]=React.useState<'resumen'|'requisitos'|'cronograma'|'documentacion'|'adendas'>('resumen');
   const [docVista,setDocVista]=React.useState<'grid'|'list'>('list');
   const [adendas,setAdendas]=React.useState<Array<{id:number;nombre:string;urlDocumento:string|null;fechaDetectado:string}>>([]);
   const [cargandoAdendas,setCargandoAdendas]=React.useState(false);
+  const [solActual,setSolActual]=React.useState(sol);
+  React.useEffect(()=>{
+    fetch(`/api/solicitudes/${sol.id}`).then(r=>r.json()).then(data=>{
+      if(data.ok&&data.solicitud)setSolActual(data.solicitud);
+    }).catch(()=>{});
+  },[sol.id]);
   const F='var(--font)';
   const FC='#334155';const FC_LABEL='#6b7280';const FC_DARK='#0f172a';
   const pc=sol.perfil?perfilColor(sol.perfil):null;
   const fmtFH=(r:string|null)=>{if(!r)return'—';const d=new Date(r);return isNaN(d.getTime())?r:d.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'})+' '+d.toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'});};
   const fmtV=(v:number|null)=>{if(v==null||isNaN(v)||v===0)return null;return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',minimumFractionDigits:0}).format(v);};
-  const docArr=Array.isArray(sol.docData)?sol.docData as any[]:[];
-  const procDataEntries=Object.entries(sol.procData||{}).filter(([,v])=>(v as any)?.fechaI||(v as any)?.obs);
+  const docArr = safeArray<DocumentoDinamico>(sol.docData);
+  const procDataEntries = Object.entries(safeRecord(sol.procData)).filter(([, value]) => {
+  const item = safeRecord(value);
+  return Boolean(safeString(item.fechaI) || safeString(item.obs));
+  });
 
   React.useEffect(()=>{
     if(!sol.procesoId)return;
@@ -3791,9 +4367,9 @@ function VistFichaBusqueda({sol,sesion,onVolver,onGestionar}:{sol:Solicitud;sesi
       .then(r=>r.json())
       .then(data=>{
         if(data.ok&&Array.isArray(data.documentos)){
-          const urlsIniciales=new Set(docArr.map((d:any)=>String(d.ruta||d.url||d.link||'').toLowerCase()).filter(Boolean));
-          const nombresIniciales=new Set(docArr.map((d:any)=>String(d.nombre||d.titulo||'').toLowerCase()).filter(Boolean));
-          const nuevos=data.documentos.filter((d:any)=>{
+          const urlsIniciales=new Set(docArr.map((d: DocumentoDinamico) =>String(d.ruta||d.url||d.link||'').toLowerCase()).filter(Boolean));
+          const nombresIniciales=new Set(docArr.map((d: DocumentoDinamico) =>String(d.nombre||d.titulo||'').toLowerCase()).filter(Boolean));
+          const nuevos=data.documentos.filter((d: DocumentoDinamico) =>{
             const url=String(d.urlDocumento||'').toLowerCase().trim();
             const nombre=String(d.nombre||'').toLowerCase().trim();
             const urlMatch=url&&urlsIniciales.has(url);
@@ -3896,7 +4472,7 @@ function VistFichaBusqueda({sol,sesion,onVolver,onGestionar}:{sol:Solicitud;sesi
 
   return(
     <div style={{display:'flex',flexDirection:'column',height:'100%',overflow:'hidden',background:'#f8fafc'}}>
-      {/* BARRA 1 */}
+      {/* Barra de información principal */}
       <div style={{background:'white',borderBottom:'1px solid #e2e8f0',padding:'4px 24px',flexShrink:0,overflow:'hidden'}}>
         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'nowrap' as const,overflow:'hidden'}}>
           {sol.estadoFuente&&<><MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>} label="Estado" badge={<span style={{display:'inline-flex',alignItems:'center',fontSize:10,fontWeight:600,color:ebFuente.color,background:ebFuente.bg,padding:'1px 7px',borderRadius:999,fontFamily:F}}>{sol.estadoFuente}</span>}/>{sep}</>}
@@ -3906,7 +4482,7 @@ function VistFichaBusqueda({sol,sesion,onVolver,onGestionar}:{sol:Solicitud;sesi
           {sol.fechaVencimiento&&<MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>} label="Vencimiento" badge={<span style={{fontWeight:600,color:'#475569',fontFamily:F,fontSize:10}}>{fmtFH(sol.fechaVencimiento)}</span>}/>}
         </div>
       </div>
-      {/* BARRA 2 */}
+      {/* Navegación de secciones */}
       <div style={{background:'white',borderBottom:'1px solid #e2e8f0',padding:'0 24px',flexShrink:0}}>
         <div style={{display:'flex',alignItems:'center',gap:0}}>
           <button onClick={onVolver}
@@ -3927,11 +4503,11 @@ function VistFichaBusqueda({sol,sesion,onVolver,onGestionar}:{sol:Solicitud;sesi
           ))}
         </div>
       </div>
-      {/* STEPPER */}
+      {/* Seguimiento del estado */}
       <div style={{background:'white',borderBottom:'1px solid #e2e8f0',padding:'0 24px',flexShrink:0}}>
-        <StepperSolicitud estadoSolicitud="Selección de proceso"/>
+        <StepperSolicitud estadoSolicitud={solActual.estadoSolicitud||'Selección de proceso'}/>
       </div>
-      {/* CUERPO */}
+      {/* Contenido principal */}
       <div style={{flex:1,overflow:'hidden',display:'grid',gridTemplateColumns:'1fr 300px',gap:16,padding:'16px 24px'}}>
         <div style={{display:'flex',flexDirection:'column',gap:12,overflowY:'auto',paddingRight:2,scrollbarWidth:'thin' as const,scrollbarColor:'transparent transparent'}}
           onMouseOver={e=>{(e.currentTarget as HTMLDivElement).style.scrollbarColor='#cbd5e1 transparent';}}
@@ -3945,11 +4521,11 @@ function VistFichaBusqueda({sol,sesion,onVolver,onGestionar}:{sol:Solicitud;sesi
             </div>
           </>}
           {tabActiva==='requisitos'&&(<div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'20px 24px',flexShrink:0}}><div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:16,fontFamily:F}}>Requisitos del proceso</div><div style={{textAlign:'center' as const,padding:'40px 0',color:'#94a3b8'}}><svg fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" style={{width:32,height:32,margin:'0 auto 10px',display:'block',opacity:.4}}><path d="M9 12h6m-6 4h6M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg><div style={{fontSize:13,fontFamily:F}}>Sin requisitos registrados</div></div></div>)}
-          {tabActiva==='cronograma'&&(<div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'24px 28px',flexShrink:0}}><div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.08em',marginBottom:20,fontFamily:F}}>Cronograma de fechas</div>{(sol.fechaPublicacion||sol.fechaVencimiento||procDataEntries.length>0)?<div style={{display:'flex',flexDirection:'column' as const}}>{sol.fechaPublicacion&&(<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:'1px solid #f1f5f9'}}><span style={{fontSize:11,color:'#374151',fontFamily:F}}>Fecha de publicación</span><span style={{fontSize:11,fontWeight:700,color:FC_DARK,fontFamily:F,whiteSpace:'nowrap' as const}}>{fmtFH(sol.fechaPublicacion)}</span></div>)}{sol.fechaVencimiento&&(<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:procDataEntries.length>0?'1px solid #f1f5f9':'none'}}><span style={{fontSize:11,color:'#374151',fontFamily:F}}>Fecha de vencimiento</span><span style={{fontSize:11,fontWeight:700,color:'#475569',fontFamily:F,whiteSpace:'nowrap' as const}}>{fmtFH(sol.fechaVencimiento)}</span></div>)}{procDataEntries.map(([k,v],i)=>{const vv=v as any;return(<div key={k} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:i<procDataEntries.length-1?'1px solid #f1f5f9':'none'}}><span style={{fontSize:11,color:'#374151',fontFamily:F,flex:1,paddingRight:24}}>{vv.obs||`Etapa ${i+1}`}</span><span style={{fontSize:11,fontWeight:700,color:FC_DARK,fontFamily:F,whiteSpace:'nowrap' as const,flexShrink:0}}>{vv.fechaI}{vv.fechaF&&vv.fechaF!==vv.fechaI?` → ${vv.fechaF}`:''}</span></div>);})}</div>:<div style={{textAlign:'center' as const,padding:'40px 0',color:'#94a3b8'}}><svg fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" style={{width:32,height:32,margin:'0 auto 10px',display:'block',opacity:.4}}><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><div style={{fontSize:13,fontFamily:F}}>Sin cronograma registrado</div></div>}</div>)}
-          {tabActiva==='documentacion'&&(<div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'16px 20px',flexShrink:0}}><div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}><div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.08em',fontFamily:F}}>Documentos {docArr.length>0&&`(${docArr.length})`}</div><div style={{display:'flex',border:'1.5px solid #e2e8f0',borderRadius:7,overflow:'hidden'}}>{([{v:'grid'},{v:'list'}] as {v:'grid'|'list'}[]).map(({v})=>(<button key={v} onClick={()=>setDocVista(v)} style={{width:28,height:26,border:'none',background:docVista===v?'#1e5799':'white',color:docVista===v?'white':'#64748b',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'all .15s'}}>{v==='grid'?<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>:<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>}</button>))}</div></div>{docArr.length>0?docVista==='grid'?<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(90px,1fr))',gap:10}}>{docArr.map((d:any,i:number)=>{const url=String(d.ruta||d.url||d.link||'');const ext=getDocExt(url,String(d.nombre||d.titulo||''));return(<a key={i} href={url||'#'} target="_blank" rel="noopener noreferrer" style={{display:'flex',flexDirection:'column' as const,alignItems:'center',gap:6,padding:'10px 6px',border:'1.5px solid #f1f5f9',borderRadius:10,textDecoration:'none',background:'white',transition:'all .15s'}} onMouseOver={e=>{(e.currentTarget as HTMLAnchorElement).style.borderColor='#1e5799';(e.currentTarget as HTMLAnchorElement).style.background='#f8fbff';}} onMouseOut={e=>{(e.currentTarget as HTMLAnchorElement).style.borderColor='#f1f5f9';(e.currentTarget as HTMLAnchorElement).style.background='white';}}><div style={{position:'relative' as const,width:40,height:48}}><div style={{width:40,height:48,borderRadius:'3px 10px 3px 3px',background:ext.bg,border:`1.5px solid ${ext.color}30`,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:6}}><div style={{position:'absolute' as const,top:0,right:0,width:10,height:10,background:'white',borderLeft:`1.5px solid ${ext.color}30`,borderBottom:`1.5px solid ${ext.color}30`,borderRadius:'0 0 0 3px'}}/><span style={{fontSize:7,fontWeight:800,color:ext.color,fontFamily:F,letterSpacing:'0.03em'}}>{ext.label}</span></div></div><div style={{fontSize:10,fontWeight:500,color:'#334155',fontFamily:F,textAlign:'center' as const,lineHeight:1.3,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const,maxWidth:'100%',wordBreak:'break-word' as const}}>{String(d.nombre||d.titulo||`Doc ${i+1}`)}</div></a>);})}</div>:<div style={{display:'flex',flexDirection:'column' as const}}>{docArr.map((d:any,i:number)=>{const url=String(d.ruta||d.url||d.link||'');const ext=getDocExt(url,String(d.nombre||d.titulo||''));const nombre=String(d.nombre||d.titulo||`Documento ${i+1}`).toUpperCase();return(<div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'7px 0',borderBottom:i<docArr.length-1?'1px solid #f8fafc':'none'}}><div style={{width:28,height:34,borderRadius:'2px 7px 2px 2px',background:ext.bg,border:`1px solid ${ext.color}20`,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:4,position:'relative' as const,flexShrink:0}}><div style={{position:'absolute' as const,top:0,right:0,width:7,height:7,background:'white',borderLeft:`1px solid ${ext.color}20`,borderBottom:`1px solid ${ext.color}20`,borderRadius:'0 0 0 2px'}}/><span style={{fontSize:6,fontWeight:800,color:ext.color,fontFamily:F,letterSpacing:'0.02em'}}>{ext.label}</span></div><div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const,fontFamily:F}}>{nombre}</div></div><div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}><span style={{fontSize:10,fontWeight:600,color:'#64748b',fontFamily:F,background:'#f1f5f9',padding:'2px 7px',borderRadius:5,border:'1px solid #e2e8f0'}}>{ext.label}</span>{url&&(<a href={url} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:5,height:28,padding:'0 12px',borderRadius:7,background:'#1e5799',color:'white',fontSize:11,fontWeight:700,textDecoration:'none',fontFamily:F,transition:'all .15s',flexShrink:0}} onMouseOver={e=>{(e.currentTarget as HTMLAnchorElement).style.background='#174a85';}} onMouseOut={e=>{(e.currentTarget as HTMLAnchorElement).style.background='#1e5799';}}><svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Descargar</a>)}</div></div>);})}</div>:<div style={{textAlign:'center' as const,padding:'40px 0',color:'#94a3b8'}}><svg fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" style={{width:32,height:32,margin:'0 auto 10px',display:'block',opacity:.4}}><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg><div style={{fontSize:13,fontFamily:F}}>Sin documentos disponibles</div></div>}</div>)}
+          {tabActiva==='cronograma'&&(<div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'24px 28px',flexShrink:0}}><div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.08em',marginBottom:20,fontFamily:F}}>Cronograma de fechas</div>{(sol.fechaPublicacion||sol.fechaVencimiento||procDataEntries.length>0)?<div style={{display:'flex',flexDirection:'column' as const}}>{sol.fechaPublicacion&&(<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:'1px solid #f1f5f9'}}><span style={{fontSize:11,color:'#374151',fontFamily:F}}>Fecha de publicación</span><span style={{fontSize:11,fontWeight:700,color:FC_DARK,fontFamily:F,whiteSpace:'nowrap' as const}}>{fmtFH(sol.fechaPublicacion)}</span></div>)}{sol.fechaVencimiento&&(<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:procDataEntries.length>0?'1px solid #f1f5f9':'none'}}><span style={{fontSize:11,color:'#374151',fontFamily:F}}>Fecha de vencimiento</span><span style={{fontSize:11,fontWeight:700,color:'#475569',fontFamily:F,whiteSpace:'nowrap' as const}}>{fmtFH(sol.fechaVencimiento)}</span></div>)}{procDataEntries.map(([k,v],i)=>{const vv = safeRecord(v); return(<div key={k} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:i<procDataEntries.length-1?'1px solid #f1f5f9':'none'}}><span style={{fontSize:11,color:'#374151',fontFamily:F,flex:1,paddingRight:24}}>{safeString(vv.obs, `Etapa ${i + 1}`)}</span><span style={{fontSize:11,fontWeight:700,color:FC_DARK,fontFamily:F,whiteSpace:'nowrap' as const,flexShrink:0}}>{safeString(vv.fechaI)}{safeString(vv.fechaF) && safeString(vv.fechaF) !== safeString(vv.fechaI) ? ` → ${safeString(vv.fechaF)}` : ''}</span></div>);})}</div>:<div style={{textAlign:'center' as const,padding:'40px 0',color:'#94a3b8'}}><svg fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" style={{width:32,height:32,margin:'0 auto 10px',display:'block',opacity:.4}}><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg><div style={{fontSize:13,fontFamily:F}}>Sin cronograma registrado</div></div>}</div>)}
+          {tabActiva==='documentacion'&&(<div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'16px 20px',flexShrink:0}}><div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}><div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.08em',fontFamily:F}}>Documentos {docArr.length>0&&`(${docArr.length})`}</div><div style={{display:'flex',border:'1.5px solid #e2e8f0',borderRadius:7,overflow:'hidden'}}>{([{v:'grid'},{v:'list'}] as {v:'grid'|'list'}[]).map(({v})=>(<button key={v} onClick={()=>setDocVista(v)} style={{width:28,height:26,border:'none',background:docVista===v?'#1e5799':'white',color:docVista===v?'white':'#64748b',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',transition:'all .15s'}}>{v==='grid'?<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>:<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>}</button>))}</div></div>{docArr.length>0?docVista==='grid'?<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(90px,1fr))',gap:10}}>{docArr.map((d: DocumentoDinamico, i: number) =>{const url=String(d.ruta||d.url||d.link||'');const ext=getDocExt(url,String(d.nombre||d.titulo||''));return(<a key={i} href={url||'#'} target="_blank" rel="noopener noreferrer" style={{display:'flex',flexDirection:'column' as const,alignItems:'center',gap:6,padding:'10px 6px',border:'1.5px solid #f1f5f9',borderRadius:10,textDecoration:'none',background:'white',transition:'all .15s'}} onMouseOver={e=>{(e.currentTarget as HTMLAnchorElement).style.borderColor='#1e5799';(e.currentTarget as HTMLAnchorElement).style.background='#f8fbff';}} onMouseOut={e=>{(e.currentTarget as HTMLAnchorElement).style.borderColor='#f1f5f9';(e.currentTarget as HTMLAnchorElement).style.background='white';}}><div style={{position:'relative' as const,width:40,height:48}}><div style={{width:40,height:48,borderRadius:'3px 10px 3px 3px',background:ext.bg,border:`1.5px solid ${ext.color}30`,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:6}}><div style={{position:'absolute' as const,top:0,right:0,width:10,height:10,background:'white',borderLeft:`1.5px solid ${ext.color}30`,borderBottom:`1.5px solid ${ext.color}30`,borderRadius:'0 0 0 3px'}}/><span style={{fontSize:7,fontWeight:800,color:ext.color,fontFamily:F,letterSpacing:'0.03em'}}>{ext.label}</span></div></div><div style={{fontSize:10,fontWeight:500,color:'#334155',fontFamily:F,textAlign:'center' as const,lineHeight:1.3,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const,maxWidth:'100%',wordBreak:'break-word' as const}}>{String(d.nombre||d.titulo||`Doc ${i+1}`)}</div></a>);})}</div>:<div style={{display:'flex',flexDirection:'column' as const}}>{docArr.map((d: DocumentoDinamico, i: number) =>{const url=String(d.ruta||d.url||d.link||'');const ext=getDocExt(url,String(d.nombre||d.titulo||''));const nombre=String(d.nombre||d.titulo||`Documento ${i+1}`).toUpperCase();return(<div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'7px 0',borderBottom:i<docArr.length-1?'1px solid #f8fafc':'none'}}><div style={{width:28,height:34,borderRadius:'2px 7px 2px 2px',background:ext.bg,border:`1px solid ${ext.color}20`,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:4,position:'relative' as const,flexShrink:0}}><div style={{position:'absolute' as const,top:0,right:0,width:7,height:7,background:'white',borderLeft:`1px solid ${ext.color}20`,borderBottom:`1px solid ${ext.color}20`,borderRadius:'0 0 0 2px'}}/><span style={{fontSize:6,fontWeight:800,color:ext.color,fontFamily:F,letterSpacing:'0.02em'}}>{ext.label}</span></div><div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const,fontFamily:F}}>{nombre}</div></div><div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}><span style={{fontSize:10,fontWeight:600,color:'#64748b',fontFamily:F,background:'#f1f5f9',padding:'2px 7px',borderRadius:5,border:'1px solid #e2e8f0'}}>{ext.label}</span>{url&&(<a href={url} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:5,height:28,padding:'0 12px',borderRadius:7,background:'#1e5799',color:'white',fontSize:11,fontWeight:700,textDecoration:'none',fontFamily:F,transition:'all .15s',flexShrink:0}} onMouseOver={e=>{(e.currentTarget as HTMLAnchorElement).style.background='#174a85';}} onMouseOut={e=>{(e.currentTarget as HTMLAnchorElement).style.background='#1e5799';}}><svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Descargar</a>)}</div></div>);})}</div>:<div style={{textAlign:'center' as const,padding:'40px 0',color:'#94a3b8'}}><svg fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" style={{width:32,height:32,margin:'0 auto 10px',display:'block',opacity:.4}}><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg><div style={{fontSize:13,fontFamily:F}}>Sin documentos disponibles</div></div>}</div>)}
           {tabActiva==='adendas'&&bloqueAdendas}
         </div>
-        {/* Columna derecha */}
+        {/* Panel lateral de acciones */}
         <div style={{display:'flex',flexDirection:'column',gap:10}}>
           <button style={{width:'100%',height:38,borderRadius:10,background:'white',color:'#1e5799',border:'1.5px solid #1e5799',fontSize:13,fontWeight:600,fontFamily:F,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,transition:'all .15s'}} onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#eff6ff';}} onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';}}>
             <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
@@ -3961,18 +4537,26 @@ function VistFichaBusqueda({sol,sesion,onVolver,onGestionar}:{sol:Solicitud;sesi
           </button>
           <div style={{height:1,background:'#f1f5f9',margin:'2px 0'}}/>
           {error&&<div style={{fontSize:11.5,color:'#dc2626',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,padding:'5px 9px',fontFamily:F}}>⚠️ {error}</div>}
-          <button onClick={hGestionar} disabled={guardando}
-            style={{width:'100%',height:40,borderRadius:10,background:guardando?'#6b93c4':'#1e5799',color:'white',border:'none',fontSize:13,fontWeight:700,fontFamily:F,cursor:guardando?'not-allowed':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,transition:'all .15s',boxShadow:guardando?'none':'0 2px 8px rgba(30,87,153,0.15)'}}
-            onMouseOver={e=>{if(!guardando)(e.currentTarget as HTMLButtonElement).style.background='#174a85';}}
-            onMouseOut={e=>{if(!guardando)(e.currentTarget as HTMLButtonElement).style.background='#1e5799';}}>
-            <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
-            {guardando?'Guardando…':'Gestionar proceso'}
-          </button>
+          {puedeGestionar?(
+            <button onClick={hGestionar} disabled={guardando}
+              style={{width:'100%',height:40,borderRadius:10,background:guardando?'#6b93c4':'#1e5799',color:'white',border:'none',fontSize:13,fontWeight:700,fontFamily:F,cursor:guardando?'not-allowed':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,transition:'all .15s',boxShadow:guardando?'none':'0 2px 8px rgba(30,87,153,0.15)'}}
+              onMouseOver={e=>{if(!guardando)(e.currentTarget as HTMLButtonElement).style.background='#174a85';}}
+              onMouseOut={e=>{if(!guardando)(e.currentTarget as HTMLButtonElement).style.background='#1e5799';}}>
+              <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+              {guardando?'Guardando…':'Gestionar proceso'}
+            </button>
+          ):(
+            <div style={{width:'100%',height:40,borderRadius:10,background:'#f1f5f9',color:'#94a3b8',border:'none',fontSize:12,fontFamily:F,display:'flex',alignItems:'center',justifyContent:'center',gap:7}}>
+              <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+              Sin permiso para gestionar
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
+
 function ModuloSolicitudesAbiertasBase({sesion,variante}:{sesion:Sesion;variante:VarianteSolicitudes}){
   const cfg = VARIANTE_CONFIG[variante];
   const [solicitudes,setSolicitudes]=useState<Solicitud[]>([]);
@@ -4082,32 +4666,80 @@ function ModuloSolicitudesAbiertasBase({sesion,variante}:{sesion:Sesion;variante
   };
 
   const exportarExcelSolicitudes=()=>{
-    const datos=filtradas.length>0?filtradas:porVariante;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const hacer=(XLSX:any)=>{
-      const cab=['N°','Tipo proceso','Entidad grupo','No. proceso','Entidad contratante','Modalidad','Fecha cierre'];
-      const filas=datos.map(s=>[
-        s.id,
-        (s.fuente||'').toLowerCase().includes('secop')?'Público':'Privado',
-        s.perfil||'',
-        s.codigoProceso||'',
-        s.entidad||'',
-        modalidadSolicitud(s),
-        s.fechaCierre||s.fechaVencimiento?new Date(s.fechaCierre||s.fechaVencimiento||'').toLocaleDateString('es-CO'):'',
-      ]);
-      const wb=XLSX.utils.book_new();
-      const ws=XLSX.utils.aoa_to_sheet([cab,...filas]);
-      ws['!cols']=[{wch:6},{wch:12},{wch:14},{wch:18},{wch:30},{wch:20},{wch:14}];
-      const titulo=cfg.titulo.replace(/\s+/g,'_').replace(/[^a-zA-Z0-9_]/g,'');
-      XLSX.utils.book_append_sheet(wb,ws,cfg.titulo.slice(0,31));
-      XLSX.writeFile(wb,`${titulo}_${new Date().toISOString().slice(0,10)}.xlsx`,{bookType:'xlsx',type:'binary'});
+  const datos=filtradas.length>0?filtradas:porVariante;
+  const hacer=(XLSX:XlsxLike)=>{
+    const cab=[
+      'N°','Origen','Tipo proceso','Entidad grupo','No. proceso','Entidad contratante',
+      'Objeto','Modalidad','Ciudad','Departamento','Perfil','Fuente','Plataforma',
+      'Estado fuente','Estado solicitud','Presupuesto','Fecha publicación',
+      'Fecha cierre','Fecha vencimiento','No. SQR','Registrado por','Cargo registro',
+      'Fecha registro','NIT contacto','Persona contacto','Teléfono contacto',
+      'Correo contacto','Dirección contacto','Link detalle','Asignaciones',
+    ];
+    const fmtF=(v:string|null|undefined)=>{
+      if(!v)return'';
+      const d=new Date(v);
+      return isNaN(d.getTime())?v:d.toLocaleDateString('es-CO');
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if((window as any).XLSX){hacer((window as any).XLSX);}
-    else{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    s.onload=()=>hacer((window as any).XLSX);document.head.appendChild(s);}
+    const fmtV=(v:number|null|undefined)=>{
+      if(v==null||isNaN(v)||v===0)return'';
+      return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',minimumFractionDigits:0}).format(v);
+    };
+    const filas=datos.map(s=>[
+      s.id,
+      s.origenSolicitud||'Comercial',
+      (s.fuente||'').toLowerCase().includes('secop')?'Público':'Privado',
+      s.perfil||'',
+      s.codigoProceso||'',
+      s.entidad||'',
+      s.objeto||'',
+      modalidadSolicitud(s),
+      s.ciudad||'',
+      s.departamento||'',
+      s.perfil||'',
+      s.fuente||'',
+      s.plataforma||'',
+      s.estadoFuente||'',
+      s.estadoSolicitud||'',
+      fmtV(s.valor),
+      fmtF(s.fechaPublicacion),
+      fmtF(s.fechaCierre),
+      fmtF(s.fechaVencimiento),
+      s.sqrNumero||'',
+      s.usuarioRegistro||'',
+      s.cargoRegistro||'',
+      fmtF(s.createdAt),
+      s.nitContacto||'',
+      s.personaContacto||'',
+      s.telefonoContacto||'',
+      s.correoContacto||'',
+      s.direccionContacto||'',
+      s.linkDetalle||s.linkSecop||s.linkSecopReg||'',
+      Array.isArray(s.asignaciones)
+        ?safeArray<Record<string, unknown>>(s.asignaciones).map(a=>`${safeString(a.analistaAsignado)} (${safeString(a.estadoAsignacion)})`).join(' | ')
+        :'',
+    ]);
+    const wb=XLSX.utils.book_new();
+    const ws=XLSX.utils.aoa_to_sheet([cab,...filas]);
+    ws['!cols']=[
+      {wch:6},{wch:14},{wch:12},{wch:14},{wch:20},{wch:30},{wch:40},{wch:20},
+      {wch:16},{wch:16},{wch:14},{wch:14},{wch:14},{wch:16},{wch:16},{wch:16},
+      {wch:16},{wch:14},{wch:14},{wch:12},{wch:18},{wch:18},{wch:16},{wch:14},
+      {wch:18},{wch:16},{wch:24},{wch:20},{wch:30},{wch:40},
+    ];
+    const titulo=cfg.titulo.replace(/\s+/g,'_').replace(/[^a-zA-Z0-9_]/g,'');
+    XLSX.utils.book_append_sheet(wb,ws,cfg.titulo.slice(0,31));
+    XLSX.writeFile(wb,`${titulo}_${new Date().toISOString().slice(0,10)}.xlsx`,{bookType:'xlsx',type:'binary'});
   };
+  const xlsx = getWindowXlsx();
+  if(xlsx){hacer(xlsx);}
+  else{
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload=()=>{const loadedXlsx=getWindowXlsx();if(loadedXlsx)hacer(loadedXlsx);};
+    document.head.appendChild(s);
+  }
+};
 
   const COLS=[
     {w:48,label:'N°'},
@@ -4234,15 +4866,15 @@ function ModuloSolicitudesAbiertasBase({sesion,variante}:{sesion:Sesion;variante
   </>);
 }
 
-/* ── Wrappers de variante — reutilizan la base sin duplicar código ── */
+/* Variantes del módulo de solicitudes */
 function ModuloSolicitudesTodas({sesion}:{sesion:Sesion}){return<ModuloSolicitudesAbiertasBase sesion={sesion} variante="TODAS"/>;}
 function ModuloSolicitudesRechazadas({sesion}:{sesion:Sesion}){return<ModuloSolicitudesAbiertasBase sesion={sesion} variante="RECHAZADA"/>;}
 function ModuloSolicitudesComercial({sesion}:{sesion:Sesion}){return<ModuloSolicitudesAbiertasBase sesion={sesion} variante="COMERCIAL"/>;}
 function ModuloSolicitudesEspecializada({sesion}:{sesion:Sesion}){return<ModuloSolicitudesAbiertasBase sesion={sesion} variante="ESPECIALIZADA"/>;}
 
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    MÓDULO SOLICITUDES ELIMINADAS
-══════════════════════════════════════════════════════════════ */
+========================================================= */
 function ModuloSolicitudesEliminadas(){
   const [registros,setRegistros]=useState<DeletedSolicitud[]>([]);
   const [cargando,setCargando]=useState(true);const[error,setError]=useState('');
@@ -4319,9 +4951,9 @@ function ModuloSolicitudesEliminadas(){
   </div>);
 }
 
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    MÓDULO EXÁMENES MÉDICOS
-══════════════════════════════════════════════════════════════ */
+========================================================= */
 const EXAMEN_COLS=[
   {key:'cod_grupo_exam', label:'Grupo',         w:110},
   {key:'cod_examen',     label:'Cód. examen',   w:130},
@@ -4363,7 +4995,7 @@ function ModuloExamenesMedicos(){
     catch{setError('No se pudo conectar.');}finally{setCargando(false);}
   },[grupoExam,codmun]);
 
-  useEffect(()=>{fetchTodos(1);},[]);// eslint-disable-line
+  useEffect(()=>{fetchTodos(1);},[]);
   const irPagina=(p:number)=>{setPagina(p);if(modo==='todos')fetchTodos(p);else fetchGrupo(p);};
   const resetTodos=()=>{setModo('todos');setGrupoExam('');setCodmun('');setBusqueda('');setPagina(1);setFA({ciudad:''});setFCiudad('');fetchTodos(1);};
   const aplicarFiltros=()=>{setFA({ciudad:fCiudad});setPF(false);};
@@ -4381,10 +5013,9 @@ function ModuloExamenesMedicos(){
     try{
       const res=await fetch(`/api/examenes?export=true`);const data=await res.json();if(!res.ok||!data.ok){setError(data.error??'Error al exportar.');return;}
       const todos:ExamenMedico[]=data.data??[];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const hacer=(XLSX:any)=>{const cab=['Grupo','Cód. examen','NIT proveedor','Cód. municipio','Ciudad','Examen','Valor'];const filas=todos.map(r=>[String(r.cod_grupo_exam??''),String(r.cod_examen??''),String(r.nit_proveedor??''),String(r.codmun??''),String(r.ciudad??''),String(r.descripcion??''),Number(r.vlr_costo)||0]);const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet([cab,...filas]);const range=XLSX.utils.decode_range(ws['!ref']??'A1');for(let R=1;R<=range.e.r;R++){const cell=ws[XLSX.utils.encode_cell({r:R,c:6})];if(cell&&cell.t==='n')cell.z='$#,##0';}ws['!cols']=[{wch:12},{wch:14},{wch:16},{wch:12},{wch:18},{wch:50},{wch:16}];XLSX.utils.book_append_sheet(wb,ws,'Exámenes médicos');XLSX.writeFile(wb,`examenes_medicos_${new Date().toISOString().slice(0,10)}.xlsx`,{bookType:'xlsx',type:'binary'});};
+      const hacer=(XLSX:XlsxLike)=>{const cab=['Grupo','Cód. examen','NIT proveedor','Cód. municipio','Ciudad','Examen','Valor'];const filas=todos.map(r=>[String(r.cod_grupo_exam??''),String(r.cod_examen??''),String(r.nit_proveedor??''),String(r.codmun??''),String(r.ciudad??''),String(r.descripcion??''),Number(r.vlr_costo)||0]);const wb=XLSX.utils.book_new();const ws=XLSX.utils.aoa_to_sheet([cab,...filas]);const range=XLSX.utils.decode_range(ws['!ref']??'A1');for(let R=1;R<=range.e.r;R++){const cell=ws[XLSX.utils.encode_cell({r:R,c:6})];const cellRecord=safeRecord(cell);if(cellRecord.t==='n')cellRecord.z='$#,##0';}ws['!cols']=[{wch:12},{wch:14},{wch:16},{wch:12},{wch:18},{wch:50},{wch:16}];XLSX.utils.book_append_sheet(wb,ws,'Exámenes médicos');XLSX.writeFile(wb,`examenes_medicos_${new Date().toISOString().slice(0,10)}.xlsx`,{bookType:'xlsx',type:'binary'});};
        
-      if((window as any).XLSX){hacer((window as any).XLSX);}else{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=()=>hacer((window as any).XLSX);document.head.appendChild(s);} // eslint-disable-line
+      const xlsx = getWindowXlsx();if(xlsx){hacer(xlsx);}else{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=()=>{const loadedXlsx=getWindowXlsx();if(loadedXlsx)hacer(loadedXlsx);};document.head.appendChild(s);}
     }catch{setError('No se pudo exportar.');}finally{setExportando(false);}
   };
 
@@ -4433,9 +5064,9 @@ function ModuloExamenesMedicos(){
   </>);
 }
 
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    USUARIOS ELIMINADOS
-══════════════════════════════════════════════════════════════ */
+========================================================= */
 function ModuloUsuariosEliminados(){
   const [registros,setRegistros]=useState<DeletedUser[]>([]);const[cargando,setCargando]=useState(true);const[errorCarga,setErrorCarga]=useState('');const[busqueda,setBusqueda]=useState('');
   const cargar=useCallback(async()=>{setCargando(true);setErrorCarga('');try{const res=await fetch('/api/deleted-users');if(!res.ok)throw new Error();setRegistros(await res.json());}catch{setErrorCarga('No se pudo cargar usuarios eliminados.');}finally{setCargando(false);};},[]);
@@ -4447,9 +5078,9 @@ function ModuloUsuariosEliminados(){
   return(<div className="content"><div className="page-header"><div className="page-title"><IcoTrash/><span>Usuarios eliminados : {filtrados.length} / {registros.length}</span></div><div className="page-actions"><input type="text" className="search-box" placeholder="Buscar…" value={busqueda} onChange={e=>setBusqueda(e.target.value)}/><button className="icon-btn" onClick={()=>{setBusqueda('');cargar();}}><IcoRefresh/></button></div></div><div className="table-card"><div className="table-scroll"><table><thead><tr>{['Cédula','Celular','Entidad','Cargo','Email','Usuario','Rol','Estado','Eliminado por','Correo eliminador','Fecha eliminación'].map(h=><th key={h}><div className="th-top">{h}</div></th>)}</tr></thead><tbody>{filtrados.length===0?<tr><td colSpan={11} style={{textAlign:'center',color:'#6b7280',padding:'28px 10px'}}>No hay registros.</td></tr>:filtrados.map(u=><tr key={u.id}><td>{u.cedula}</td><td>{u.celular}</td><td>{u.entidadGrupo}</td><td>{u.cargo}</td><td>{u.email}</td><td>{u.usuario}</td><td>{u.rol}</td><td><span className="badge" style={{background:'#fee2e2',color:'#dc2626',fontSize:11}}>{u.estado}</span></td><td>{u.deletedByUsuario||'—'}</td><td>{u.deletedByEmail||'—'}</td><td>{fmt(u.deletedAt)}</td></tr>)}</tbody></table></div><div className="pagination-bar"><span>1 - {filtrados.length} de {registros.length}</span></div></div></div>);
 }
 
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    MÓDULO PROCESOS NUEVOS
-══════════════════════════════════════════════════════════════ */
+========================================================= */
 interface ProcesoNuevoItem {
   id:number; procesoId:number|null; sourceKey:string;
   codigoProceso:string|null; nombre:string|null; entidad:string|null;
@@ -4461,7 +5092,7 @@ interface ProcesoNuevoItem {
   fechaDeteccion:string;
 }
 
-function ModuloProcesoNuevos({sesion,onModuleChange}:{sesion:Sesion;onModuleChange:(m:string)=>void}){
+function ModuloProcesoNuevos({sesion,onModuleChange,puedeGestionar=true}:{sesion:Sesion;onModuleChange:(m:string)=>void;puedeGestionar?:boolean}){
   const [procesos,setProcesos]=useState<ProcesoNuevoItem[]>([]);
   const [total,setTotal]=useState(0);const[totalPages,setTotalPages]=useState(1);
   const [pagina,setPagina]=useState(1);
@@ -4738,10 +5369,10 @@ function Placeholder({nombre}:{nombre:string}){
     </div>
   );
 }
-/* ══════════════════════════════════════════════════════════════
+/* =========================================================
    ROOT
-══════════════════════════════════════════════════════════════ */
-// ── Mapas de causas ──────────────────────────────────────────
+========================================================= */
+/* Catálogos de causas para gestión */
 const CAUSAS_ESPECIFICAS: Record<string, string[]> = {
   'Indicador': ['Endeudamiento','Razón de cobertura de intereses','Rentabilidad del activo','Rentabilidad del patrimonio','Capital de trabajo'],
   'Condición habilitante': ['Limitado a Mipyme','Establecimiento de comercio'],
@@ -4750,292 +5381,1099 @@ const CAUSAS_ESPECIFICAS: Record<string, string[]> = {
   'Otro': ['Otro concepto'],
 };
 const TIPOS_CAUSA = Object.keys(CAUSAS_ESPECIFICAS);
-const ESTADOS_ASIGNACION = ['En observación','En proceso','En evaluación','Terminado'];
-const RESULTADOS_TERMINADO = ['Adjudicado','No adjudicado','No presentado'];
+const ESTADOS_ASIGNACION = ['En observación','En proceso','En evaluación','Cerrada'];
+const RESULTADOS_CIERRE = ['Adjudicado','No adjudicado','No presentado'];
 
-function ModalGestionAsignacion({
-  sol,
-  asignacion,
-  onClose,
-  onGuardado,
-  sesion,
-}:{
-  sol:Solicitud;
-  asignacion:Record<string,unknown>;
-  onClose:()=>void;
-  onGuardado:(updated:Solicitud)=>void;
-  sesion:Sesion;
-}){
-  const [estadoAsig,setEstadoAsig]=React.useState(String(asignacion.estadoAsignacion||'En observación'));
-  const [tipoCausa,setTipoCausa]=React.useState(String(asignacion.tipoCausa||''));
-  const [causaEspecifica,setCausaEspecifica]=React.useState(String(asignacion.causaEspecifica||''));
-  const [resultado,setResultado]=React.useState(String(asignacion.resultadoFinal||'Pendiente'));
-  const [observacion,setObservacion]=React.useState(String(asignacion.observacionesGestion||''));
+function ModalGestionAsignacion({sol,asignacion,onClose,onGuardado,sesion}:{sol:Solicitud;asignacion:Record<string,unknown>;onClose:()=>void;onGuardado:(updated:Solicitud)=>void;sesion:Sesion;}){
+  const asignacionActual = safeRecord(asignacion);
+  const estadoActual = safeString(getRecordValue(asignacionActual, 'estadoAsignacion'), 'Pendiente');
+  const [estadoAsig,setEstadoAsig]=React.useState<string>(estadoActual);
+  const [tipoCausa,setTipoCausa]=React.useState<string>(safeString(getRecordValue(asignacionActual, 'tipoCausa')));
+  const [causaEspecifica,setCausaEspecifica]=React.useState<string>(safeString(getRecordValue(asignacionActual, 'causaEspecifica')));
+  const [observacion,setObservacion]=React.useState<string>(safeString(getRecordValue(asignacionActual, 'observacionesGestion')));
+  const [resultado,setResultado]=React.useState<string>(safeString(getRecordValue(asignacionActual, 'resultadoFinal')));
+  const [indicadores, setIndicadores] = React.useState<IndicadorAsignacion[]>(() => safeArray<IndicadorAsignacion>(asignacion.indicadores));
+  const [indForm,setIndForm]=React.useState({valorRequerido:'',valorEvidenciado:'',cumple:'',obs:''});
   const [guardando,setGuardando]=React.useState(false);
+  const [cerrando,setCerrando]=React.useState(false);
   const [error,setError]=React.useState('');
   const [verDetalle,setVerDetalle]=React.useState(false);
 
-
   const F='var(--font)';
-  const FC='#334155';
-  const FC_LABEL='#94a3b8';
-  const FC_DARK='#0f172a';
+  const FC='#334155';const FC_LABEL='#94a3b8';const FC_DARK='#0f172a';
   const baseText:React.CSSProperties={fontSize:13,color:FC,fontFamily:F,lineHeight:1.5};
   const labelStyle:React.CSSProperties={fontSize:9,fontWeight:700,color:FC_LABEL,letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:4};
   const iS:React.CSSProperties={width:'100%',height:38,border:'1.5px solid #e2e8f0',borderRadius:8,padding:'0 12px',fontSize:13,fontFamily:F,color:FC_DARK,outline:'none',background:'white',boxSizing:'border-box' as const};
   const iSdis:React.CSSProperties={...iS,background:'#f8fafc',color:FC_LABEL,cursor:'not-allowed'};
 
-  const fmtFechaHora=(r:string|null)=>{if(!r)return'—';const d=new Date(r);return isNaN(d.getTime())?r:d.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'})+' '+d.toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'});};
   const fmtV=(v:number|null)=>{if(v==null||isNaN(v)||v===0)return'—';return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',minimumFractionDigits:0}).format(v);};
 
   const esObservacion=estadoAsig==='En observación';
-  const esTerminado=estadoAsig==='Terminado';
+  const esCierre=estadoAsig==='Cerrada';
+  const esEvaluacion=estadoAsig==='En evaluación';
+  const esIndicador=tipoCausa==='Indicador';
   const causasEsp=CAUSAS_ESPECIFICAS[tipoCausa]||[];
 
-  // Al cambiar tipo causa, resetear causa específica
-  const setTipo=(v:string)=>{setTipoCausa(v);setCausaEspecifica('');};
+  const setTipo=(v:string)=>{setTipoCausa(v);setCausaEspecifica('');setIndicadores([]);};
 
   const pc=sol.perfil?perfilColor(sol.perfil):null;
   const portalInfo=portalColor(sol.aliasFuente||'',sol.fuente||'');
 
-  const guardar=async()=>{
+  const agregarIndicador=()=>{
+    if(!causaEspecifica||!indForm.valorRequerido||!indForm.valorEvidenciado||!indForm.cumple){
+      setError('Completa todos los campos del indicador.');return;
+    }
     setError('');
-    if(esObservacion&&(!tipoCausa||!causaEspecifica)){
-      setError('Debes seleccionar tipo de causa y causa específica.');return;
+    setIndicadores(prev=>[...prev,{subcausa:causaEspecifica,...indForm}]);
+    setIndForm({valorRequerido:'',valorEvidenciado:'',cumple:'',obs:''});
+  };
+
+  const guardarEstado=async(nuevoEstadoForzado?:string)=>{
+    setError('');
+    const nuevoEstado=nuevoEstadoForzado??estadoAsig;
+
+    if(nuevoEstado==='En observación'){
+      if(!tipoCausa||!causaEspecifica){setError('Debes seleccionar tipo de causa y causa específica.');return;}
+      if(esIndicador&&indicadores.length===0){setError('Agrega al menos un indicador.');return;}
     }
-    if(esTerminado&&(!resultado||resultado==='Pendiente')){
-      setError('Debes seleccionar un resultado.');return;
+    if(nuevoEstado==='Cerrada'&&estadoActual==='En evaluación'){
+      if(!resultado){setError('Debes seleccionar un resultado.');return;}
     }
-    setGuardando(true);
+
+    nuevoEstadoForzado?setCerrando(true):setGuardando(true);
     try{
-      const ahora=new Date();
-      const pad=(n:number)=>String(n).padStart(2,'0');
+      const ahora=new Date();const pad=(n:number)=>String(n).padStart(2,'0');
       const fechaStr=`${ahora.getFullYear()}-${pad(ahora.getMonth()+1)}-${pad(ahora.getDate())} ${pad(ahora.getHours())}:${pad(ahora.getMinutes())}:${pad(ahora.getSeconds())}`;
-
-      // Determinar nuevo estado
-      const nuevoEstado=esObservacion?'Cerrada':estadoAsig;
-
-      // Actualizar asignación en el array
-      const asigs=Array.isArray(sol.asignaciones)?[...sol.asignaciones as Array<Record<string,unknown>>]:[];
+      const asigs = [...safeArray<Record<string, unknown>>(sol.asignaciones)];
       const idx=asigs.findIndex(a=>a.idAsignacion===asignacion.idAsignacion);
+      const estadoReal=nuevoEstado.replace('← ','');
+      const nuevoEstadoSol=estadoReal==='Cerrada'?'Cerrada':estadoReal==='En evaluación'?'En evaluación':estadoReal==='En proceso'?'En proceso':estadoReal==='En observación'?'En observación':estadoReal==='Pendiente'?'Asignada':estadoReal==='Asignada'?'Asignada':'Asignada';
       const updatedAsig:Record<string,unknown>={
         ...asignacion,
-        estadoAsignacion:nuevoEstado,
+        estadoAsignacion:estadoReal,
         tipoCausa:tipoCausa||null,
         causaEspecifica:causaEspecifica||null,
-        resultadoFinal:esTerminado?resultado:'Pendiente',
+        indicadores:esIndicador&&indicadores.length>0?indicadores:null,
+        resultadoFinal:estadoReal==='Cerrada'?resultado||null:null,
         observacionesGestion:observacion,
         ultimaActualizacion:fechaStr,
         gestionadoPor:sesion.usuario,
       };
       if(idx>=0)asigs[idx]=updatedAsig;
-
-      // Determinar nuevo estado de la solicitud
-      const nuevoEstadoSolicitud=nuevoEstado==='Cerrada'||nuevoEstado==='Terminado'?'Cerrada':'Asignada';
-
-      const res=await fetch('/api/solicitudes',{
-        method:'PATCH',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          id:sol.id,
-          asignaciones:asigs,
-          estadoSolicitud:nuevoEstadoSolicitud,
-        }),
-      });
+      const res=await fetch('/api/solicitudes',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:sol.id,asignaciones:asigs,estadoSolicitud:nuevoEstadoSol})});
       const data=await res.json();
       if(!res.ok||!data.ok){setError(data.error??'Error al guardar.');return;}
-      onGuardado({...sol,...data.solicitud,asignaciones:asigs,estadoSolicitud:nuevoEstadoSolicitud});
+      onGuardado({...sol,...data.solicitud,asignaciones:asigs,estadoSolicitud:nuevoEstadoSol});
       onClose();
     }catch{setError('No se pudo conectar.');}
-    finally{setGuardando(false);}
+    finally{setGuardando(false);setCerrando(false);}
   };
 
+  // Estados disponibles según estado actual
+  const estadosDisponibles=(()=>{
+    if(estadoActual==='Pendiente')return['En observación','En proceso'];
+    if(estadoActual==='En observación')return['Pendiente','En proceso'];
+    if(estadoActual==='En proceso')return['Asignada','En evaluación'];
+    if(estadoActual==='En evaluación')return['En proceso','Cerrada'];
+    return[];
+  })()
+
+  const puedeGestionarEstado=estadosDisponibles.length>0&&estadoActual!=='Cerrada';
+  const puedesCerrarPorObservacion=estadoActual==='En observación';
+
   return(
-      <>
+    <>
       {verDetalle&&<ModalDetallesProceso sol={sol} onClose={()=>setVerDetalle(false)}/>}
-    <div className="modal-overlay" style={{zIndex:1100}} onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
-      <div style={{background:'white',borderRadius:12,width:'94vw',maxWidth:720,maxHeight:'90vh',display:'flex',flexDirection:'column' as const,boxShadow:'0 20px 60px rgba(15,32,64,.2)',overflow:'hidden',border:'1px solid #e2e8f0'}}>
+      <div className="modal-overlay" style={{zIndex:1100}} onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+        <div style={{background:'white',borderRadius:12,width:'94vw',maxWidth:760,maxHeight:'92vh',display:'flex',flexDirection:'column' as const,boxShadow:'0 20px 60px rgba(15,32,64,.2)',overflow:'hidden',border:'1px solid #e2e8f0'}}>
 
-        {/* HEADER */}
-        <div style={{background:'white',borderBottom:'1px solid #f1f5f9',padding:'16px 24px',flexShrink:0}}>
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-            <div>
-              <div style={{fontSize:15,fontWeight:700,color:FC_DARK,fontFamily:F}}>Gestión de asignación</div>
-              <div style={{fontSize:11,color:FC_LABEL,fontFamily:F,marginTop:2}}>{String(asignacion.idAsignacion||'—')} · {sol.entidad||'—'}</div>
-            </div>
-            <button onClick={onClose} style={{width:30,height:30,borderRadius:8,border:'1.5px solid #e2e8f0',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8'}}
-              onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#fef2f2';(e.currentTarget as HTMLButtonElement).style.color='#ef4444';}}
-              onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';(e.currentTarget as HTMLButtonElement).style.color='#94a3b8';}}>
-              <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><path d="M18 6L6 18M6 6l12 12"/></svg>
-            </button>
-          </div>
-        </div>
-
-        {/* BODY */}
-        <div style={{overflowY:'auto',flex:1,padding:'20px 24px',display:'flex',flexDirection:'column' as const,gap:20}}>
-
-          {error&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,padding:'10px 14px',color:'#dc2626',fontSize:12,fontFamily:F}}>⚠️ {error}</div>}
-
-          {/* Datos del proceso */}
-          <div style={{background:'#f8fafc',border:'1px solid #f1f5f9',borderRadius:10,padding:'14px 16px'}}>
-            <div style={{fontSize:10,fontWeight:700,color:FC_LABEL,letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:12}}>Datos del proceso</div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 24px'}}>
-              {[
-                {label:'N° Solicitud', value:`#${sol.id}`},
-                {label:'Tipo de proceso', value:portalInfo.label},
-                {label:'Entidad del grupo', value:pc?.label||'—'},
-                {label:'Ciudad', value:sol.ciudad||sol.departamento||'—'},
-                {label:'ID SQR', value:sol.sqrNumero||'—'},
-                {label:'No. proceso', value:sol.codigoProceso||'—'},
-                {label:'Presupuesto oficial', value:fmtV(sol.valor)},
-                {label:'Registrado por', value:sol.usuarioRegistro||'—'},
-              ].map(({label,value},i)=>(
-                <div key={i}>
-                  <div style={labelStyle}>{label}</div>
-                  <div style={{...baseText,fontSize:12.5}}>{value}</div>
+          {/* HEADER */}
+          <div style={{background:'white',borderBottom:'1px solid #f1f5f9',padding:'16px 24px',flexShrink:0}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+              <div>
+                <div style={{fontSize:15,fontWeight:700,color:FC_DARK,fontFamily:F}}>Gestión de asignación</div>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginTop:3}}>
+                  <span style={{fontSize:11,color:FC_LABEL,fontFamily:F}}>{String(asignacion.idAsignacion||'—')} · {sol.entidad||'—'}</span>
+                  <span style={{display:'inline-flex',alignItems:'center',fontSize:10,fontWeight:600,padding:'1px 8px',borderRadius:999,background:estadoActual==='Cerrada'?'#f1f5f9':estadoActual==='En observación'?'#FFF8E1':estadoActual==='En proceso'?'#EAF2FB':estadoActual==='En evaluación'?'#E8F5E9':'#fef3c7',color:estadoActual==='Cerrada'?'#475569':estadoActual==='En observación'?'#92400e':estadoActual==='En proceso'?'#1e5799':estadoActual==='En evaluación'?'#15803d':'#92400e',fontFamily:F}}>
+                    {estadoActual}
+                  </span>
                 </div>
-              ))}
-              {sol.objeto&&(
-                <div style={{gridColumn:'1/-1'}}>
+              </div>
+              <button onClick={onClose} style={{width:30,height:30,borderRadius:8,border:'1.5px solid #e2e8f0',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8'}}
+                onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#fef2f2';(e.currentTarget as HTMLButtonElement).style.color='#ef4444';}}
+                onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';(e.currentTarget as HTMLButtonElement).style.color='#94a3b8';}}>
+                <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+          </div>
+
+          {/* BODY */}
+          <div style={{overflowY:'auto',flex:1,padding:'20px 24px',display:'flex',flexDirection:'column' as const,gap:18}}>
+            {error&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,padding:'10px 14px',color:'#dc2626',fontSize:12,fontFamily:F}}>⚠️ {error}</div>}
+
+            {/* Datos del proceso */}
+            <div style={{background:'#f8fafc',border:'1px solid #f1f5f9',borderRadius:10,padding:'14px 16px'}}>
+              <div style={{fontSize:10,fontWeight:700,color:FC_LABEL,letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:12}}>Datos del proceso</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 24px'}}>
+                {[
+                  {label:'N° Solicitud',value:`#${sol.id}`},
+                  {label:'Analista asignado',value:String(asignacion.analistaAsignado||'—')},
+                  {label:'Entidad del grupo',value:pc?.label||'—'},
+                  {label:'Ciudad',value:sol.ciudad||sol.departamento||'—'},
+                  {label:'No. proceso',value:sol.codigoProceso||'—'},
+                  {label:'Presupuesto',value:fmtV(sol.valor)},
+                ].map(({label,value},i)=>(
+                  <div key={i}>
+                    <div style={labelStyle}>{label}</div>
+                    <div style={{...baseText,fontSize:12.5}}>{value}</div>
+                  </div>
+                ))}
+                {sol.objeto&&<div style={{gridColumn:'1/-1'}}>
                   <div style={labelStyle}>Descripción</div>
-                  <div style={{...baseText,fontSize:12.5,lineHeight:1.6}}>
-                    {sol.objeto.charAt(0).toUpperCase()+sol.objeto.slice(1).toLowerCase()}
+                  <div style={{...baseText,fontSize:12,lineHeight:1.6}}>{sol.objeto.charAt(0).toUpperCase()+sol.objeto.slice(1).toLowerCase()}</div>
+                </div>}
+              </div>
+              <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #f1f5f9'}}>
+                <button onClick={()=>setVerDetalle(true)}
+                  style={{display:'inline-flex',alignItems:'center',gap:6,height:30,padding:'0 14px',borderRadius:7,border:'1.5px solid #1e5799',background:'white',color:'#1e5799',fontSize:12,fontWeight:600,fontFamily:F,cursor:'pointer'}}
+                  onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#eff6ff';}}
+                  onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';}}>
+                  <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><path d="M9 12h6m-6 4h6M5 20h14a2 2 0 002-2V8.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0014.586 2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                  Ver datos del proceso
+                </button>
+              </div>
+            </div>
+
+            {/* Si está cerrada — mostrar resumen */}
+            {estadoActual==='Cerrada'&&(
+              <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:10,padding:'14px 16px'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#15803d',letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:10}}>Asignación cerrada</div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px 24px'}}>
+                  {String(asignacion.tipoCausa||'')&&<div><div style={labelStyle}>Tipo de causa</div><div style={{...baseText,fontSize:12.5}}>{String(asignacion.tipoCausa)}</div></div>}
+                  {String(asignacion.causaEspecifica||'')&&<div><div style={labelStyle}>Causa específica</div><div style={{...baseText,fontSize:12.5}}>{String(asignacion.causaEspecifica)}</div></div>}
+                  {String(asignacion.resultadoFinal||'')&&<div><div style={labelStyle}>Resultado</div><div style={{...baseText,fontSize:12.5,fontWeight:600}}>{String(asignacion.resultadoFinal)}</div></div>}
+                  {String(asignacion.observacionesGestion||'')&&<div style={{gridColumn:'1/-1'}}><div style={labelStyle}>Observaciones</div><div style={{...baseText,fontSize:12}}>{String(asignacion.observacionesGestion)}</div></div>}
+                </div>
+              </div>
+            )}
+
+            {/* Gestión — solo si no está cerrada */}
+            {puedeGestionarEstado&&(
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:FC_DARK,fontFamily:F,marginBottom:14,paddingBottom:8,borderBottom:'1px solid #f1f5f9'}}>
+                  Avanzar estado
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'14px 20px'}}>
+
+                  {/* Selector estado */}
+                  <div>
+                    <div style={labelStyle}>Nuevo estado *</div>
+                    <select style={iS} value={estadoAsig} onChange={e=>setEstadoAsig(e.target.value)}>
+                      {estadosDisponibles.map(e=><option key={e} value={e}>{e}</option>)}
+                    </select>
+                  </div>
+
+                  {/* Resultado — solo En evaluación → Cerrada */}
+                  {esCierre&&(
+                    <div>
+                      <div style={labelStyle}>Resultado *</div>
+                      <select style={iS} value={resultado} onChange={e=>setResultado(e.target.value)}>
+                        <option value="">— Seleccione —</option>
+                        {RESULTADOS_CIERRE.map(r=><option key={r} value={r}>{r}</option>)}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Causa — solo En observación */}
+                  {esObservacion&&<>
+                    <div>
+                      <div style={labelStyle}>Tipo de causa *</div>
+                      <select style={iS} value={tipoCausa} onChange={e=>setTipo(e.target.value)}>
+                        <option value="">— Seleccione —</option>
+                        {TIPOS_CAUSA.map(t=><option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </div>
+                    {tipoCausa&&<div>
+                      <div style={labelStyle}>Causa específica *</div>
+                      <select style={iS} value={causaEspecifica} onChange={e=>setCausaEspecifica(e.target.value)}>
+                        <option value="">— Seleccione —</option>
+                        {causasEsp.map(c=><option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>}
+
+                    {/* Indicadores */}
+                    {esIndicador&&causaEspecifica&&<div style={{gridColumn:'1/-1'}}>
+                      {indicadores.length>0&&(
+                        <div style={{background:'#f8fafc',borderRadius:8,padding:'10px 12px',marginBottom:10,display:'flex',flexDirection:'column' as const,gap:6}}>
+                          <div style={{fontSize:10,fontWeight:700,color:FC_LABEL,fontFamily:F,letterSpacing:'0.08em',textTransform:'uppercase' as const,marginBottom:2}}>
+                            Indicadores registrados · {indicadores.length}
+                          </div>
+                          {indicadores.map((ind,i)=>(
+                            <div key={i} style={{display:'flex',alignItems:'center',gap:8,background:'white',border:'1px solid #e2e8f0',borderRadius:7,padding:'7px 10px'}}>
+                              <div style={{width:18,height:18,borderRadius:'50%',background:ind.cumple==='Sí'?'#E8F5E9':'#FFEBEE',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                                {ind.cumple==='Sí'
+                                  ?<svg fill="none" stroke="#15803d" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M20 6L9 17l-5-5"/></svg>
+                                  :<svg fill="none" stroke="#dc2626" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M18 6L6 18M6 6l12 12"/></svg>
+                                }
+                              </div>
+                              <div style={{flex:1,minWidth:0}}>
+                                <div style={{fontSize:12,fontWeight:600,color:FC_DARK,fontFamily:F}}>{ind.subcausa}</div>
+                                <div style={{fontSize:10.5,color:FC_LABEL,fontFamily:F}}>Req: {ind.valorRequerido} · Evid: {ind.valorEvidenciado} · {ind.cumple==='Sí'?'Cumple':'No cumple'}</div>
+                              </div>
+                              <button onClick={()=>setIndicadores(prev=>prev.filter((_,idx)=>idx!==i))}
+                                style={{width:20,height:20,borderRadius:'50%',border:'1px solid #e2e8f0',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8',padding:0,flexShrink:0}}
+                                onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.color='#ef4444';(e.currentTarget as HTMLButtonElement).style.borderColor='#fca5a5';}}
+                                onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.color='#94a3b8';(e.currentTarget as HTMLButtonElement).style.borderColor='#e2e8f0';}}>
+                                <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M18 6L6 18M6 6l12 12"/></svg>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div style={{background:'#f8fafc',borderRadius:8,padding:'12px 14px',border:'1px dashed #d1d5db'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:FC_LABEL,fontFamily:F,letterSpacing:'0.08em',textTransform:'uppercase' as const,marginBottom:10}}>
+                          Agregar indicador · {causaEspecifica}
+                        </div>
+                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:8}}>
+                          <div>
+                            <div style={{fontSize:11,fontWeight:600,color:'#374151',fontFamily:F,marginBottom:4}}>Valor requerido *</div>
+                            <input style={{...iS,height:34}} placeholder="Ej. 1,5" value={indForm.valorRequerido} onChange={e=>setIndForm(p=>({...p,valorRequerido:e.target.value}))}/>
+                          </div>
+                          <div>
+                            <div style={{fontSize:11,fontWeight:600,color:'#374151',fontFamily:F,marginBottom:4}}>Valor evidenciado *</div>
+                            <input style={{...iS,height:34}} placeholder="Ej. 1,2" value={indForm.valorEvidenciado} onChange={e=>setIndForm(p=>({...p,valorEvidenciado:e.target.value}))}/>
+                          </div>
+                          <div>
+                            <div style={{fontSize:11,fontWeight:600,color:'#374151',fontFamily:F,marginBottom:4}}>¿Cumple? *</div>
+                            <select style={{...iS,height:34}} value={indForm.cumple} onChange={e=>setIndForm(p=>({...p,cumple:e.target.value}))}>
+                              <option value="">—</option>
+                              <option value="Sí">Sí</option>
+                              <option value="No">No</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div style={{marginBottom:8}}>
+                          <div style={{fontSize:11,fontWeight:600,color:'#374151',fontFamily:F,marginBottom:4}}>Observación técnica</div>
+                          <textarea style={{...iS,height:52,padding:'6px 12px',resize:'vertical' as const,lineHeight:1.5}} placeholder="Detalle técnico…" value={indForm.obs} onChange={e=>setIndForm(p=>({...p,obs:e.target.value}))}/>
+                        </div>
+                        <button onClick={agregarIndicador}
+                          style={{height:30,padding:'0 14px',borderRadius:7,background:'#1e5799',color:'white',border:'none',fontSize:12,fontWeight:600,fontFamily:F,cursor:'pointer',display:'inline-flex',alignItems:'center',gap:5}}>
+                          <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:11,height:11}}><path d="M12 5v14M5 12h14"/></svg>
+                          Agregar
+                        </button>
+                      </div>
+                    </div>}
+                  </>}
+
+                  {/* Observación general */}
+                  <div style={{gridColumn:'1/-1'}}>
+                    <div style={labelStyle}>Observaciones de gestión</div>
+                    <textarea style={{...iS,height:72,padding:'8px 12px',resize:'vertical' as const,lineHeight:1.5}}
+                      value={observacion} onChange={e=>setObservacion(e.target.value)}
+                      placeholder="Registre novedades, avances o acuerdos…"/>
                   </div>
                 </div>
-              )}
-            </div>
-          </div>
-  
 
-<div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #f1f5f9'}}>
-  <button
-    onClick={()=>setVerDetalle(true)}
-    style={{display:'inline-flex',alignItems:'center',gap:8,height:34,padding:'0 16px',borderRadius:8,border:'1.5px solid #1e5799',background:'white',color:'#1e5799',fontSize:12.5,fontWeight:600,fontFamily:F,cursor:'pointer',transition:'all .15s'}}
-    onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#eff6ff';}}
-    onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';}}>
-    <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M9 12h6m-6 4h6M5 20h14a2 2 0 002-2V8.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0014.586 2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
-    Ver datos del proceso
-  </button>
-</div>
-
-          {/* Gestión */}
-          <div>
-            <div style={{fontSize:11,fontWeight:700,color:FC_DARK,fontFamily:F,marginBottom:14,paddingBottom:8,borderBottom:'1px solid #f1f5f9'}}>Gestión de la asignación</div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'14px 20px'}}>
-
-              {/* Estado asignación */}
-              <div>
-                <div style={labelStyle}>Estado de asignación *</div>
-                <select style={iS} value={estadoAsig} onChange={e=>setEstadoAsig(e.target.value)}>
-                  {ESTADOS_ASIGNACION.map(e=><option key={e} value={e}>{e}</option>)}
-                </select>
-              </div>
-
-              {/* Analista */}
-              <div>
-                <div style={labelStyle}>Analista asignado</div>
-                <input style={iSdis} value={String(asignacion.analistaAsignado||'—')} disabled/>
-              </div>
-
-              {/* Resultado */}
-              <div>
-                <div style={labelStyle}>Resultado {esTerminado?'*':''}</div>
-                {esTerminado?(
-                  <select style={iS} value={resultado} onChange={e=>setResultado(e.target.value)}>
-                    <option value="">— Seleccione —</option>
-                    {RESULTADOS_TERMINADO.map(r=><option key={r} value={r}>{r}</option>)}
-                  </select>
-                ):(
-                  <input style={iSdis} value="Pendiente" disabled/>
+                {/* Avisos */}
+                {esObservacion&&tipoCausa&&causaEspecifica&&(
+                  <div style={{marginTop:12,background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:'10px 14px',fontSize:12,color:'#9a3412',fontFamily:F}}>
+                    ⚠️ La asignación quedará en espera (<strong>En observación</strong>) con causa: <strong>{tipoCausa} → {causaEspecifica}</strong>
+                  </div>
+                )}
+                {esCierre&&resultado&&(
+                  <div style={{marginTop:12,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,padding:'10px 14px',fontSize:12,color:'#14532d',fontFamily:F}}>
+                    ✓ La asignación quedará <strong>Cerrada</strong> con resultado: <strong>{resultado}</strong>
+                  </div>
                 )}
               </div>
+            )}
 
-              {/* Tipo de causa — solo En observación */}
-              {esObservacion&&(
-                <div>
-                  <div style={labelStyle}>Tipo de causa *</div>
-                  <select style={iS} value={tipoCausa} onChange={e=>setTipo(e.target.value)}>
-                    <option value="">— Seleccione —</option>
-                    {TIPOS_CAUSA.map(t=><option key={t} value={t}>{t}</option>)}
+            {/* Cerrar por observación — solo si está en En observación */}
+            {puedesCerrarPorObservacion&&(
+              <div style={{background:'#fef3c7',border:'1px solid #fde68a',borderRadius:10,padding:'14px 16px'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#92400e',fontFamily:F,marginBottom:6}}>Cerrar por observación</div>
+                <div style={{fontSize:12,color:'#78350f',fontFamily:F,marginBottom:10,lineHeight:1.5}}>
+                  Si la entidad no resolvió favorablemente la observación, puedes cerrar la asignación con la causa ya registrada.
+                </div>
+                <div style={{marginBottom:10}}>
+                  <div style={labelStyle}>Resultado *</div>
+                  <select style={{...iS,maxWidth:280}} value={resultado} onChange={e=>setResultado(e.target.value)}>
+                    <option value="">— Seleccione resultado —</option>
+                    {RESULTADOS_CIERRE.map(r=><option key={r} value={r}>{r}</option>)}
                   </select>
                 </div>
-              )}
-
-              {/* Causa específica — solo En observación y cuando hay tipo */}
-              {esObservacion&&tipoCausa&&(
-                <div style={{gridColumn:'1/-1'}}>
-                  <div style={labelStyle}>Causa específica *</div>
-                  <select style={iS} value={causaEspecifica} onChange={e=>setCausaEspecifica(e.target.value)}>
-                    <option value="">— Seleccione —</option>
-                    {causasEsp.map(c=><option key={c} value={c}>{c}</option>)}
-                  </select>
-                </div>
-              )}
-
-              {/* Observación */}
-              <div style={{gridColumn:'1/-1'}}>
-                <div style={labelStyle}>Observaciones de gestión</div>
-                <textarea
-                  style={{...iS,height:80,padding:'8px 12px',resize:'vertical' as const,lineHeight:1.5}}
-                  value={observacion}
-                  onChange={e=>setObservacion(e.target.value)}
-                  placeholder="Ingrese observaciones sobre la gestión…"
-                />
+                <button onClick={()=>guardarEstado('Cerrada')} disabled={cerrando||!resultado}
+                  style={{height:34,padding:'0 16px',borderRadius:8,background:cerrando||!resultado?'#d97706':'#b45309',color:'white',border:'none',fontSize:12,fontWeight:600,fontFamily:F,cursor:cerrando||!resultado?'not-allowed':'pointer',display:'inline-flex',alignItems:'center',gap:6,transition:'all .15s'}}
+                  onMouseOver={e=>{if(!cerrando&&resultado)(e.currentTarget as HTMLButtonElement).style.background='#92400e';}}
+                  onMouseOut={e=>{if(!cerrando&&resultado)(e.currentTarget as HTMLButtonElement).style.background='#b45309';}}>
+                  <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                  {cerrando?'Cerrando…':'Cerrar por observación'}
+                </button>
               </div>
-            </div>
+            )}
           </div>
 
-          {/* Aviso si es observación */}
-          {esObservacion&&tipoCausa&&causaEspecifica&&(
-            <div style={{background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:'10px 14px',fontSize:12,color:'#9a3412',fontFamily:F}}>
-              ⚠️ Al guardar, la asignación quedará en estado <strong>Cerrada</strong> con causa: <strong>{tipoCausa} → {causaEspecifica}</strong>
+          {/* FOOTER */}
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'14px 24px',borderTop:'1px solid #f1f5f9',background:'white',flexShrink:0}}>
+            <div style={{fontSize:11,color:FC_LABEL,fontFamily:F}}>
+              Asignado por: {String(asignacion.asignadoPor||'—')} · {String(asignacion.fechaAsignacion||'—').slice(0,10)}
             </div>
-          )}
-
-          {/* Aviso si es terminado */}
-          {esTerminado&&(
-            <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,padding:'10px 14px',fontSize:12,color:'#14532d',fontFamily:F}}>
-              ✓ Al guardar con estado <strong>Terminado</strong>, la solicitud quedará cerrada.
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={onClose} disabled={guardando||cerrando}
+                style={{height:36,padding:'0 16px',borderRadius:8,border:'1.5px solid #e2e8f0',background:'white',color:'#475569',fontSize:12.5,fontFamily:F,cursor:'pointer'}}>
+                Cancelar
+              </button>
+              {puedeGestionarEstado&&(
+                <button onClick={()=>guardarEstado()} disabled={guardando||cerrando}
+                  style={{height:36,padding:'0 20px',borderRadius:8,background:guardando?'#6b93c4':'#1e5799',color:'white',border:'none',fontSize:12.5,fontWeight:600,fontFamily:F,cursor:guardando?'not-allowed':'pointer',transition:'all .15s'}}
+                  onMouseOver={e=>{if(!guardando)(e.currentTarget as HTMLButtonElement).style.background='#174a85';}}
+                  onMouseOut={e=>{if(!guardando)(e.currentTarget as HTMLButtonElement).style.background='#1e5799';}}>
+                  {guardando?'Guardando…':'Guardar'}
+                </button>
+              )}
             </div>
-          )}
-        </div>
-
-        {/* FOOTER */}
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'14px 24px',borderTop:'1px solid #f1f5f9',background:'white',flexShrink:0}}>
-          <div style={{fontSize:11,color:FC_LABEL,fontFamily:F}}>
-            Asignado por: {String(asignacion.asignadoPor||'—')} · {String(asignacion.fechaAsignacion||'—').slice(0,10)}
-          </div>
-          <div style={{display:'flex',gap:8}}>
-            <button onClick={onClose} disabled={guardando}
-              style={{height:36,padding:'0 16px',borderRadius:8,border:'1.5px solid #e2e8f0',background:'white',color:'#475569',fontSize:12.5,fontFamily:F,cursor:'pointer'}}>
-              Cancelar
-            </button>
-            <button onClick={guardar} disabled={guardando}
-              style={{height:36,padding:'0 20px',borderRadius:8,background:guardando?'#6b93c4':'#1e5799',color:'white',border:'none',fontSize:12.5,fontWeight:600,fontFamily:F,cursor:guardando?'not-allowed':'pointer',transition:'all .15s'}}
-              onMouseOver={e=>{if(!guardando)(e.currentTarget as HTMLButtonElement).style.background='#174a85';}}
-              onMouseOut={e=>{if(!guardando)(e.currentTarget as HTMLButtonElement).style.background='#1e5799';}}>
-              {guardando?'Guardando…':'Guardar'}
-            </button>
           </div>
         </div>
       </div>
-    </div>
-      </>
+    </>
   );
 }
-/* ══════════════════════════════════════════════════════════════
-   MÓDULO ASIGNACIONES PENDIENTES
-   Muestra solicitudes con asignaciones en estado 'Pendiente'
-══════════════════════════════════════════════════════════════ */
+
+function GestionAsignacionInline({
+  sol,
+  asignacion,
+  sesion,
+  onVolver,
+  onGuardado
+}: {
+  sol: Solicitud;
+  asignacion: Record<string, unknown>;
+  sesion: Sesion;
+  onVolver: () => void;
+  onGuardado: (u: Solicitud) => void;
+}) {
+  const estadoActual = String(asignacion.estadoAsignacion || 'Pendiente');
+
+  const [estadoAsig, setEstadoAsig] = React.useState<string>(() => {
+    if (estadoActual === 'Pendiente' || estadoActual === 'Asignada') return 'En observación';
+    if (estadoActual === 'En observación') return 'En proceso';
+    if (estadoActual === 'En proceso') return 'En evaluación';
+    if (estadoActual === 'En evaluación') return 'Cerrada';
+    return 'En proceso';
+  });
+  const asignacionActual = safeRecord(asignacion);
+  const [tipoCausa,setTipoCausa]=React.useState<string>(safeString(getRecordValue(asignacionActual, 'tipoCausa')));
+  const [causaEspecifica,setCausaEspecifica]=React.useState<string>(safeString(getRecordValue(asignacionActual, 'causaEspecifica')));
+  const [observacion,setObservacion]=React.useState<string>(safeString(getRecordValue(asignacionActual, 'observacionesGestion')));
+  const [resultado,setResultado]=React.useState<string>(safeString(getRecordValue(asignacionActual, 'resultadoFinal')));
+  const [indicadores, setIndicadores] = React.useState<IndicadorAsignacion[]>(() => safeArray<IndicadorAsignacion>(asignacion.indicadores));
+  const [indForm,setIndForm]=React.useState({valorRequerido:'',valorEvidenciado:'',cumple:'',obs:''});
+  const [guardando,setGuardando]=React.useState(false);
+  const [cerrando,setCerrando]=React.useState(false);
+  const [error,setError]=React.useState('');
+
+  const F='var(--font)';
+  const FC='#334155';const FC_LABEL='#94a3b8';const FC_DARK='#0f172a';
+  const iS:React.CSSProperties={width:'100%',height:38,border:'1.5px solid #e2e8f0',borderRadius:8,padding:'0 12px',fontSize:13,fontFamily:F,color:FC_DARK,outline:'none',background:'white',boxSizing:'border-box' as const};
+  const lbl:React.CSSProperties={fontSize:11,fontWeight:600,color:'#374151',fontFamily:F,marginBottom:5,display:'block' as const};
+
+  const esObservacion=estadoAsig==='En observación';
+  const esCierre=estadoAsig==='Cerrada';
+  const esIndicador=tipoCausa==='Indicador';
+  const causasEsp=CAUSAS_ESPECIFICAS[tipoCausa]||[];
+  const setTipo=(v:string)=>{setTipoCausa(v);setCausaEspecifica('');setIndicadores([]);};
+
+  const fmtV=(v:number|null)=>{if(v==null||isNaN(v)||v===0)return'—';return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',minimumFractionDigits:0}).format(v);};
+  const pc=sol.perfil?perfilColor(sol.perfil):null;
+
+  const estadosDisponibles=(()=>{
+    if(estadoActual==='Pendiente')return['En observación','En proceso'];
+    if(estadoActual==='En observación')return['← Pendiente','En proceso'];
+    if(estadoActual==='En proceso')return['← Pendiente','En evaluación'];
+    if(estadoActual==='En evaluación')return['← En proceso','Cerrada'];
+    if(estadoActual==='Asignada')return['En observación','En proceso'];
+    return['En observación','En proceso'];
+  })();
+
+  const puedesCerrarPorObservacion=estadoActual==='En observación';
+
+  const agregarIndicador=()=>{
+    if(!causaEspecifica||!indForm.valorRequerido||!indForm.valorEvidenciado||!indForm.cumple){
+      setError('Completa todos los campos del indicador.');return;
+    }
+    setError('');
+    setIndicadores(prev=>[...prev,{subcausa:causaEspecifica,...indForm}]);
+    setIndForm({valorRequerido:'',valorEvidenciado:'',cumple:'',obs:''});
+  };
+
+  const guardarEstado=async(nuevoEstadoForzado?:string)=>{
+    setError('');
+    const nuevoEstado=nuevoEstadoForzado??estadoAsig;
+    if(nuevoEstado==='En observación'){
+      if(!tipoCausa||!causaEspecifica){setError('Selecciona tipo de causa y causa específica.');return;}
+      if(esIndicador&&indicadores.length===0){setError('Agrega al menos un indicador.');return;}
+    }
+    if(nuevoEstado==='Cerrada'&&!resultado){setError('Selecciona un resultado.');return;}
+    nuevoEstadoForzado?setCerrando(true):setGuardando(true);
+    try{
+      const ahora=new Date();const pad=(n:number)=>String(n).padStart(2,'0');
+      const fechaStr=`${ahora.getFullYear()}-${pad(ahora.getMonth()+1)}-${pad(ahora.getDate())} ${pad(ahora.getHours())}:${pad(ahora.getMinutes())}:${pad(ahora.getSeconds())}`;
+      const asigs = [...safeArray<Record<string, unknown>>(sol.asignaciones)];
+      const idx=asigs.findIndex(a=>a.idAsignacion===asignacion.idAsignacion);
+      const estadoReal=nuevoEstado.replace('← ','');
+      const nuevoEstadoSol=estadoReal==='Cerrada'?'Cerrada':estadoReal==='En evaluación'?'En evaluación':estadoReal==='En proceso'?'En proceso':estadoReal==='En observación'?'En observación':estadoReal==='Pendiente'?'Asignada':estadoReal==='Asignada'?'Asignada':'Asignada';
+      const updatedAsig:Record<string,unknown>={
+        ...asignacion,
+        estadoAsignacion:estadoReal,
+        tipoCausa:tipoCausa||null,
+        causaEspecifica:causaEspecifica||null,
+        indicadores:esIndicador&&indicadores.length>0?indicadores:null,
+        resultadoFinal:estadoReal==='Cerrada'?resultado||null:null,
+        observacionesGestion:observacion,
+        ultimaActualizacion:fechaStr,
+        gestionadoPor:sesion.usuario,
+      };
+      if(idx>=0)asigs[idx]=updatedAsig;
+      const res=await fetch('/api/solicitudes',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:sol.id,asignaciones:asigs,estadoSolicitud:nuevoEstadoSol})});
+      const data=await res.json();
+      if(!res.ok||!data.ok){setError(data.error??'Error al guardar.');return;}
+      onGuardado({...sol,...data.solicitud,asignaciones:asigs,estadoSolicitud:nuevoEstadoSol});
+    }catch{setError('No se pudo conectar.');}
+    finally{setGuardando(false);setCerrando(false);}
+  };
+
+  return(
+    <div style={{display:'flex',flexDirection:'column',height:'100%',overflow:'hidden',background:'#f8fafc'}}>
+
+      {/* BARRA */}
+      <div style={{background:'white',borderBottom:'1px solid #e2e8f0',padding:'0 24px',flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',gap:0}}>
+          <button onClick={onVolver}
+            style={{display:'inline-flex',alignItems:'center',gap:5,height:44,padding:'0 14px 0 0',border:'none',borderRight:'1px solid #e2e8f0',background:'transparent',color:'#475569',fontSize:12,fontWeight:500,fontFamily:F,cursor:'pointer',flexShrink:0,marginRight:16}}
+            onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.color='#1e5799';}}
+            onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.color='#475569';}}>
+            <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:13,height:13}}><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+            Volver a la ficha
+          </button>
+          <span style={{fontSize:13,fontWeight:600,color:FC_DARK,fontFamily:F}}>Gestión de asignación</span>
+          <span style={{marginLeft:10,fontSize:11,color:FC_LABEL,fontFamily:F}}>{String(asignacion.idAsignacion||'—')} · {sol.entidad||'—'}</span>
+        </div>
+      </div>
+
+      {/* Contenido principal */}
+      <div style={{flex:1,overflowY:'auto',padding:'20px 24px',display:'flex',flexDirection:'column' as const,gap:16,scrollbarWidth:'thin' as const}}>
+        {error&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,padding:'10px 14px',color:'#dc2626',fontSize:12,fontFamily:F}}>⚠️ {error}</div>}
+
+        {/* Resumen proceso */}
+        <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'16px'}}>
+          <div style={{fontSize:10,fontWeight:700,color:FC_LABEL,letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:12}}>Datos del proceso</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'10px 24px'}}>
+            {[
+              {label:'N° Solicitud',value:`#${sol.id}`},
+              {label:'Responsable',value:String(asignacion.analistaAsignado||'—')},
+              {label:'Entidad del grupo',value:pc?.label||'—'},
+              {label:'Ciudad',value:sol.ciudad||sol.departamento||'—'},
+              {label:'No. proceso',value:sol.codigoProceso||'—'},
+              {label:'Presupuesto',value:fmtV(sol.valor)},
+            ].map(({label,value},i)=>(
+              <div key={i}>
+                <div style={{fontSize:9,fontWeight:700,color:FC_LABEL,letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:3}}>{label}</div>
+                <div style={{fontSize:12.5,color:FC_DARK,fontFamily:F}}>{value}</div>
+              </div>
+            ))}
+            {sol.objeto&&<div style={{gridColumn:'1/-1'}}>
+              <div style={{fontSize:9,fontWeight:700,color:FC_LABEL,letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:3}}>Descripción</div>
+              <div style={{fontSize:12,color:FC,fontFamily:F,lineHeight:1.6}}>{sol.objeto.charAt(0).toUpperCase()+sol.objeto.slice(1).toLowerCase()}</div>
+            </div>}
+          </div>
+        </div>
+
+        {/* Estado actual */}
+        {estadoActual==='Cerrada'?(
+          <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:10,padding:'16px'}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#15803d',letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:10}}>Asignación cerrada</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px 24px'}}>
+              {String(asignacion.tipoCausa||'')&&<div><div style={{fontSize:9,fontWeight:700,color:FC_LABEL,letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:3}}>Tipo de causa</div><div style={{fontSize:12.5,color:FC_DARK,fontFamily:F}}>{String(asignacion.tipoCausa)}</div></div>}
+              {String(asignacion.causaEspecifica||'')&&<div><div style={{fontSize:9,fontWeight:700,color:FC_LABEL,letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:3}}>Causa específica</div><div style={{fontSize:12.5,color:FC_DARK,fontFamily:F}}>{String(asignacion.causaEspecifica)}</div></div>}
+              {String(asignacion.resultadoFinal||'')&&<div><div style={{fontSize:9,fontWeight:700,color:FC_LABEL,letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:3}}>Resultado</div><div style={{fontSize:12.5,fontWeight:600,color:FC_DARK,fontFamily:F}}>{String(asignacion.resultadoFinal)}</div></div>}
+              {String(asignacion.observacionesGestion||'')&&<div style={{gridColumn:'1/-1'}}><div style={{fontSize:9,fontWeight:700,color:FC_LABEL,letterSpacing:'0.1em',textTransform:'uppercase' as const,fontFamily:F,marginBottom:3}}>Observaciones</div><div style={{fontSize:12,color:FC,fontFamily:F,lineHeight:1.6}}>{String(asignacion.observacionesGestion)}</div></div>}
+            </div>
+          </div>
+        ):(
+          <>
+            {/* Avanzar estado */}
+            {estadosDisponibles.length>0&&(
+              <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'16px'}}>
+                <div style={{fontSize:11,fontWeight:700,color:FC_DARK,fontFamily:F,marginBottom:16,paddingBottom:10,borderBottom:'1px solid #f1f5f9'}}>Avanzar estado</div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'14px 20px'}}>
+
+                  <div>
+                    <label style={lbl}>Nuevo estado *</label>
+                    <select style={iS} value={estadoAsig} onChange={e=>setEstadoAsig(e.target.value)}>
+                      {estadosDisponibles.map(e=><option key={e} value={e}>{e}</option>)}
+                    </select>
+                  </div>
+
+                  {esCierre&&<div>
+                    <label style={lbl}>Resultado *</label>
+                    <select style={iS} value={resultado} onChange={e=>setResultado(e.target.value)}>
+                      <option value="">— Seleccione —</option>
+                      {RESULTADOS_CIERRE.map(r=><option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </div>}
+
+                  {esObservacion&&<>
+                    <div>
+                      <label style={lbl}>Tipo de causa *</label>
+                      <select style={iS} value={tipoCausa} onChange={e=>setTipo(e.target.value)}>
+                        <option value="">— Seleccione —</option>
+                        {TIPOS_CAUSA.map(t=><option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </div>
+                    {tipoCausa&&<div>
+                      <label style={lbl}>Causa específica *</label>
+                      <select style={iS} value={causaEspecifica} onChange={e=>setCausaEspecifica(e.target.value)}>
+                        <option value="">— Seleccione —</option>
+                        {causasEsp.map(c=><option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>}
+
+                    {esIndicador&&causaEspecifica&&<div style={{gridColumn:'1/-1'}}>
+                      {indicadores.length>0&&(
+                        <div style={{background:'#f8fafc',borderRadius:8,padding:'10px 12px',marginBottom:10,display:'flex',flexDirection:'column' as const,gap:6}}>
+                          <div style={{fontSize:10,fontWeight:700,color:FC_LABEL,fontFamily:F,textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:2}}>Indicadores registrados · {indicadores.length}</div>
+                          {indicadores.map((ind,i)=>(
+                            <div key={i} style={{display:'flex',alignItems:'center',gap:8,background:'white',border:'1px solid #e2e8f0',borderRadius:7,padding:'7px 10px'}}>
+                              <div style={{width:18,height:18,borderRadius:'50%',background:ind.cumple==='Sí'?'#E8F5E9':'#FFEBEE',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                                {ind.cumple==='Sí'?<svg fill="none" stroke="#15803d" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M20 6L9 17l-5-5"/></svg>:<svg fill="none" stroke="#dc2626" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M18 6L6 18M6 6l12 12"/></svg>}
+                              </div>
+                              <div style={{flex:1,minWidth:0}}>
+                                <div style={{fontSize:12,fontWeight:600,color:FC_DARK,fontFamily:F}}>{ind.subcausa}</div>
+                                <div style={{fontSize:10.5,color:FC_LABEL,fontFamily:F}}>Req: {ind.valorRequerido} · Evid: {ind.valorEvidenciado} · {ind.cumple==='Sí'?'Cumple':'No cumple'}</div>
+                              </div>
+                              <button onClick={()=>setIndicadores(prev=>prev.filter((_,idx)=>idx!==i))} style={{width:20,height:20,borderRadius:'50%',border:'1px solid #e2e8f0',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8',padding:0,flexShrink:0}} onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.color='#ef4444';}} onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.color='#94a3b8';}}>
+                                <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M18 6L6 18M6 6l12 12"/></svg>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div style={{background:'#f8fafc',borderRadius:8,padding:'12px 14px',border:'1px dashed #d1d5db'}}>
+                        <div style={{fontSize:10,fontWeight:700,color:FC_LABEL,fontFamily:F,textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:10}}>Agregar indicador · {causaEspecifica}</div>
+                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:8}}>
+                          <div><label style={lbl}>Valor requerido *</label><input style={{...iS,height:34}} placeholder="Ej. 1,5" value={indForm.valorRequerido} onChange={e=>setIndForm(p=>({...p,valorRequerido:e.target.value}))}/></div>
+                          <div><label style={lbl}>Valor evidenciado *</label><input style={{...iS,height:34}} placeholder="Ej. 1,2" value={indForm.valorEvidenciado} onChange={e=>setIndForm(p=>({...p,valorEvidenciado:e.target.value}))}/></div>
+                          <div><label style={lbl}>¿Cumple? *</label><select style={{...iS,height:34}} value={indForm.cumple} onChange={e=>setIndForm(p=>({...p,cumple:e.target.value}))}><option value="">—</option><option value="Sí">Sí</option><option value="No">No</option></select></div>
+                        </div>
+                        <div style={{marginBottom:8}}><label style={lbl}>Observación técnica</label><textarea style={{...iS,height:52,padding:'6px 12px',resize:'vertical' as const,lineHeight:1.5}} placeholder="Detalle técnico…" value={indForm.obs} onChange={e=>setIndForm(p=>({...p,obs:e.target.value}))}/></div>
+                        <button onClick={agregarIndicador} style={{height:30,padding:'0 14px',borderRadius:7,background:'#1e5799',color:'white',border:'none',fontSize:12,fontWeight:600,fontFamily:F,cursor:'pointer',display:'inline-flex',alignItems:'center',gap:5}}>
+                          <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:11,height:11}}><path d="M12 5v14M5 12h14"/></svg>Agregar
+                        </button>
+                      </div>
+                    </div>}
+                  </>}
+
+                  <div style={{gridColumn:'1/-1'}}>
+                    <label style={lbl}>Observaciones de gestión</label>
+                    <textarea style={{...iS,height:80,padding:'8px 12px',resize:'vertical' as const,lineHeight:1.5}} value={observacion} onChange={e=>setObservacion(e.target.value)} placeholder="Registre novedades, avances o acuerdos…"/>
+                  </div>
+                </div>
+
+                {esObservacion&&tipoCausa&&causaEspecifica&&(
+                  <div style={{marginTop:12,background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:'10px 14px',fontSize:12,color:'#9a3412',fontFamily:F}}>
+                    ⚠️ La asignación quedará en espera (<strong>En observación</strong>) con causa: <strong>{tipoCausa} → {causaEspecifica}</strong>
+                  </div>
+                )}
+                {esCierre&&resultado&&(
+                  <div style={{marginTop:12,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,padding:'10px 14px',fontSize:12,color:'#14532d',fontFamily:F}}>
+                    ✓ La asignación quedará <strong>Cerrada</strong> con resultado: <strong>{resultado}</strong>
+                  </div>
+                )}
+
+                <div style={{marginTop:16,display:'flex',justifyContent:'flex-end'}}>
+                  <button onClick={()=>guardarEstado()} disabled={guardando}
+                    style={{height:38,padding:'0 28px',borderRadius:8,background:guardando?'#6b93c4':'#1e5799',color:'white',border:'none',fontSize:13,fontWeight:600,fontFamily:F,cursor:guardando?'not-allowed':'pointer',transition:'all .15s'}}
+                    onMouseOver={e=>{if(!guardando)(e.currentTarget as HTMLButtonElement).style.background='#174a85';}}
+                    onMouseOut={e=>{if(!guardando)(e.currentTarget as HTMLButtonElement).style.background='#1e5799';}}>
+                    {guardando?'Guardando…':'Guardar'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Cerrar por observación */}
+            {puedesCerrarPorObservacion&&(
+              <div style={{background:'#fef3c7',border:'1px solid #fde68a',borderRadius:10,padding:'16px'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#92400e',fontFamily:F,marginBottom:6}}>Cerrar por observación</div>
+                <div style={{fontSize:12,color:'#78350f',fontFamily:F,marginBottom:12,lineHeight:1.5}}>
+                  Si la entidad no resolvió favorablemente la observación, cierra la asignación con la causa ya registrada.
+                </div>
+                <div style={{marginBottom:12}}>
+                  <label style={{...lbl,color:'#92400e'}}>Resultado *</label>
+                  <select style={{...iS,maxWidth:280}} value={resultado} onChange={e=>setResultado(e.target.value)}>
+                    <option value="">— Seleccione resultado —</option>
+                    {RESULTADOS_CIERRE.map(r=><option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <button onClick={()=>guardarEstado('Cerrada')} disabled={cerrando||!resultado}
+                  style={{height:34,padding:'0 16px',borderRadius:8,background:cerrando||!resultado?'#d97706':'#b45309',color:'white',border:'none',fontSize:12,fontWeight:600,fontFamily:F,cursor:cerrando||!resultado?'not-allowed':'pointer',display:'inline-flex',alignItems:'center',gap:6,transition:'all .15s'}}
+                  onMouseOver={e=>{if(!cerrando&&resultado)(e.currentTarget as HTMLButtonElement).style.background='#92400e';}}
+                  onMouseOut={e=>{if(!cerrando&&resultado)(e.currentTarget as HTMLButtonElement).style.background='#b45309';}}>
+                  <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:12,height:12}}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                  {cerrando?'Cerrando…':'Cerrar por observación'}
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   VISTA FICHA ASIGNACION
+========================================================= */
+function VistFichaAsignacion({sol,sesion,onVolver,onGuardado}:{sol:Solicitud;sesion:Sesion;onVolver:()=>void;onGuardado:(u:Solicitud)=>void;}){
+  const [tabActiva,setTabActiva]=React.useState<'resumen'|'requisitos'|'cronograma'|'documentacion'|'adendas'>('resumen');
+  const [docVista,setDocVista]=React.useState<'grid'|'list'>('list');
+  const [adendas,setAdendas]=React.useState<Array<{id:number;nombre:string;urlDocumento:string|null;fechaDetectado:string}>>([]);
+  const [cargandoAdendas,setCargandoAdendas]=React.useState(false);
+  const [gestionAsig,setGestionAsig]=React.useState<Record<string,unknown>|null>(null);
+
+  const F='var(--font)';
+  const FC='#334155';const FC_LABEL='#6b7280';const FC_DARK='#0f172a';
+
+  const asignaciones = safeArray<Record<string, unknown>>(sol.asignaciones);
+  const asigActual=asignaciones[asignaciones.length-1]||{};
+  const estadoAsig = safeString(asigActual.estadoAsignacion, 'Pendiente');
+
+  const analistaAsignadoTexto = safeString(asigActual.analistaAsignado, '—');
+  const analistaIniciales = safeString(asigActual.analistaAsignado, '?')
+    .slice(0, 2)
+    .toUpperCase();
+  const analistaCargoTexto = safeString(asigActual.analistaCargo);
+  const idAsignacionTexto = safeString(asigActual.idAsignacion, '—');
+  const fechaAsignacionTexto = safeString(asigActual.fechaAsignacion, '—').slice(0, 10);
+  const asignadoPorTexto = safeString(asigActual.asignadoPor, '—');
+  const tipoCausaTexto = safeString(asigActual.tipoCausa);
+  const causaEspecificaTexto = safeString(asigActual.causaEspecifica, '—');
+  const resultadoFinalTexto = safeString(asigActual.resultadoFinal);
+
+  const pc=sol.perfil?perfilColor(sol.perfil):null;
+  const fmtFH=(r:string|null)=>{if(!r)return'—';const d=new Date(r);return isNaN(d.getTime())?r:d.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'})+' '+d.toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'});};
+  const fmtV=(v:number|null)=>{if(v==null||isNaN(v)||v===0)return null;return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',minimumFractionDigits:0}).format(v);};
+  const ebFuente=estadoBadgeColor(sol.estadoFuente||'');
+  const docArr = safeArray<DocumentoDinamico>(sol.docData);
+  const procDataEntries = Object.entries(sol.procData || {}).filter(([, v]) => Boolean(v?.fechaI || v?.obs));
+  const urlFuente=sol.linkSecop||sol.linkDetalle||sol.linkSecopReg||'';
+  const modalidadDisplay=(()=>{const m=sol.modalidad?.trim();if(!m||m==='—')return'—';return MMAP_MODALIDAD[m]??m;})();
+  const fuenteDisplay=sol.fuente?sol.fuente.charAt(0).toUpperCase()+sol.fuente.slice(1):'—';
+  const esEspecializada=String(sol.origenSolicitud||'').toLowerCase().includes('especial');
+  const solE = {
+    nitContacto: safeString(sol.nitContacto),
+    personaContacto: safeString(sol.personaContacto),
+    telefonoContacto: safeString(sol.telefonoContacto),
+    direccionContacto: safeString(sol.direccionContacto),
+    correoContacto: safeString(sol.correoContacto),
+  };
+
+  const getDocExt=(url:string,nombre?:string)=>{
+    const s=(url||'').toLowerCase();const n=(nombre||'').toLowerCase();
+    if(s.indexOf('.xlsx')>=0||s.indexOf('.xls')>=0||n.indexOf('excel')>=0)return{bg:'#f0fdf4',color:'#15803d',label:'XLS'};
+    if(s.indexOf('.docx')>=0||s.indexOf('.doc')>=0||n.indexOf('word')>=0)return{bg:'#eff6ff',color:'#1d4ed8',label:'DOC'};
+    if(s.indexOf('.zip')>=0||s.indexOf('.rar')>=0)return{bg:'#faf5ff',color:'#7e22ce',label:'ZIP'};
+    return{bg:'#fff1f2',color:'#be123c',label:'PDF'};
+  };
+
+  React.useEffect(()=>{
+    if(!sol.procesoId)return;
+    setCargandoAdendas(true);
+    fetch(`/api/procesos/${sol.procesoId}/documentos`)
+      .then(r=>r.json())
+      .then(data=>{
+        if(data.ok&&Array.isArray(data.documentos)){
+          const urlsIni=new Set(docArr.map((d: DocumentoDinamico) =>String(d.ruta||d.url||d.link||'').toLowerCase()).filter(Boolean));
+          const nomIni=new Set(docArr.map((d: DocumentoDinamico) =>String(d.nombre||d.titulo||'').toLowerCase()).filter(Boolean));
+          setAdendas(data.documentos.filter((d: DocumentoDinamico) =>{
+            const url=String(d.urlDocumento||'').toLowerCase().trim();
+            const nom=String(d.nombre||'').toLowerCase().trim();
+            return!(url&&urlsIni.has(url))&&!(nom&&nomIni.has(nom));
+          }));
+        }
+      }).catch(()=>{}).finally(()=>setCargandoAdendas(false));
+  },[sol.procesoId]);
+
+  const estadoAsigColor=(e:string)=>{
+    const s=e.toLowerCase();
+    if(s.includes('pendiente'))return{bg:'#fef3c7',color:'#92400e'};
+    if(s.includes('observaci'))return{bg:'#fff7ed',color:'#9a3412'};
+    if(s.includes('proceso'))return{bg:'#EAF2FB',color:'#1e5799'};
+    if(s.includes('evaluaci'))return{bg:'#E8F5E9',color:'#15803d'};
+    if(s.includes('cerrada')||s.includes('cerrado'))return{bg:'#f1f5f9',color:'#475569'};
+    return{bg:'#f1f5f9',color:'#475569'};
+  };
+
+  const MetaItem=({icon,label,badge}:{icon:React.ReactNode;label:string;badge:React.ReactNode})=>(
+    <div style={{display:'flex',alignItems:'center',gap:4,fontSize:11,fontFamily:F,color:FC,flexShrink:0,minWidth:0}}>
+      <span style={{color:'#94a3b8',display:'flex',alignItems:'center'}}>{icon}</span>
+      <span style={{fontWeight:600,color:FC_DARK}}>{label}:</span>
+      {badge}
+    </div>
+  );
+  const sep=<div style={{width:1,height:14,background:'#cbd5e1',flexShrink:0}}/>;
+
+  const TABS:[string,typeof tabActiva][]=[['Resumen','resumen'],['Requisitos','requisitos'],['Cronograma','cronograma'],['Documentación','documentacion'],['Adendas','adendas']];
+
+  if(gestionAsig){
+    return(
+      <GestionAsignacionInline
+        sol={sol}
+        asignacion={gestionAsig}
+        sesion={sesion}
+        onVolver={()=>setGestionAsig(null)}
+        onGuardado={(updated)=>{
+          onGuardado(updated);
+          setGestionAsig(null);
+        }}
+      />
+    );
+  }
+
+  return(
+    <div style={{display:'flex',flexDirection:'column',height:'100%',overflow:'hidden',background:'#f8fafc'}}>
+
+      {/* Barra de información principal */}
+      <div style={{background:'white',borderBottom:'1px solid #e2e8f0',padding:'4px 24px',flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'nowrap' as const,overflow:'hidden'}}>
+          {sol.estadoFuente&&<><MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>} label="Estado" badge={<span style={{display:'inline-flex',alignItems:'center',fontSize:10,fontWeight:600,color:ebFuente.color,background:ebFuente.bg,padding:'1px 7px',borderRadius:999,fontFamily:F}}>{sol.estadoFuente}</span>}/>{sep}</>}
+          {fmtV(sol.valor)&&<><MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>} label="Presupuesto" badge={<span style={{fontWeight:600,color:'#475569',fontFamily:F,fontSize:10}}>{fmtV(sol.valor)}</span>}/>{sep}</>}
+          {pc&&<><MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><path d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0H5"/></svg>} label="Perfil" badge={<span style={{display:'inline-flex',alignItems:'center',fontSize:10,fontWeight:600,color:'white',background:pc.color,padding:'1px 7px',borderRadius:999,fontFamily:F}}>{pc.label}</span>}/>{sep}</>}
+          {sol.codigoProceso&&<><MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><path d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"/></svg>} label="No. Proceso" badge={<span style={{fontWeight:600,color:'#475569',fontFamily:'monospace',fontSize:10}}>{sol.codigoProceso}</span>}/>{sep}</>}
+          {sol.fechaVencimiento&&<MetaItem icon={<svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>} label="Vencimiento" badge={<span style={{fontWeight:600,color:'#475569',fontFamily:F,fontSize:10}}>{fmtFH(sol.fechaVencimiento)}</span>}/>}
+        </div>
+      </div>
+
+      {/* Navegación de secciones */}
+      <div style={{background:'white',borderBottom:'1px solid #e2e8f0',padding:'0 24px',flexShrink:0}}>
+        <div style={{display:'flex',alignItems:'center',gap:0}}>
+          <button onClick={onVolver}
+            style={{display:'inline-flex',alignItems:'center',gap:5,height:44,padding:'0 14px 0 0',border:'none',borderRight:'1px solid #e2e8f0',background:'transparent',color:'#475569',fontSize:12,fontWeight:500,fontFamily:F,cursor:'pointer',flexShrink:0,marginRight:16}}
+            onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.color='#1e5799';}}
+            onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.color='#475569';}}>
+            <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:13,height:13}}><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+            Volver
+          </button>
+          {TABS.map(([label,key])=>(
+            <button key={key} onClick={()=>setTabActiva(key as typeof tabActiva)}
+              style={{height:44,padding:'0 16px',border:'none',borderBottom:tabActiva===key?'2.5px solid #1e5799':'2.5px solid transparent',background:'transparent',color:tabActiva===key?'#1e5799':'#64748b',fontSize:13,fontWeight:tabActiva===key?700:400,fontFamily:F,cursor:'pointer',transition:'all .15s',display:'inline-flex',alignItems:'center',gap:6,flexShrink:0}}>
+              {label}
+              {key==='documentacion'&&docArr.length>0&&<span style={{fontSize:10,fontWeight:700,background:tabActiva===key?'#1e5799':'#e2e8f0',color:tabActiva===key?'white':'#64748b',padding:'1px 6px',borderRadius:999}}>{docArr.length}</span>}
+              {key==='adendas'&&adendas.length>0&&<span style={{fontSize:10,fontWeight:700,background:tabActiva===key?'#1e5799':'#e2e8f0',color:tabActiva===key?'white':'#64748b',padding:'1px 6px',borderRadius:999}}>{adendas.length}</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Seguimiento del estado */}
+      <div style={{background:'white',borderBottom:'1px solid #e2e8f0',padding:'0 24px',flexShrink:0}}>
+        <StepperSolicitud estadoSolicitud={sol.estadoSolicitud||''}/>
+      </div>
+
+      {/* Contenido principal */}
+      <div style={{flex:1,overflow:'hidden',display:'grid',gridTemplateColumns:'1fr 280px',gap:16,padding:'16px 24px'}}>
+
+        {/* Columna izquierda — igual que VistFicha */}
+        <div style={{display:'flex',flexDirection:'column',gap:12,overflowY:'auto',paddingRight:2,scrollbarWidth:'thin' as const,scrollbarColor:'transparent transparent'}}
+          onMouseOver={e=>{(e.currentTarget as HTMLDivElement).style.scrollbarColor='#cbd5e1 transparent';}}
+          onMouseOut={e=>{(e.currentTarget as HTMLDivElement).style.scrollbarColor='transparent transparent';}}>
+
+          {tabActiva==='resumen'&&<>
+            {sol.objeto&&(
+              <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'12px 14px',flexShrink:0,maxHeight:120,overflowY:'auto'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:10,fontFamily:F}}>Descripción</div>
+                <p style={{margin:0,fontSize:11.5,color:'#334155',fontFamily:F,lineHeight:1.6}}>{sol.objeto.charAt(0).toUpperCase()+sol.objeto.slice(1)}</p>
+              </div>
+            )}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,flexShrink:0}}>
+              <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'14px 16px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:10}}>
+                  <svg fill="none" stroke="#64748b" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8z"/></svg>
+                  <span style={{fontSize:11,fontWeight:700,color:'#374151',fontFamily:F}}>Entidad contratante</span>
+                </div>
+                <div style={{display:'flex',flexDirection:'column' as const,gap:8}}>
+                  {esEspecializada&&solE.nitContacto&&<div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>NIT</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:'monospace'}}>{solE.nitContacto}</div></div>}
+                  <div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Organización</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:F}}>{sol.entidad||'—'}</div></div>
+                  {sol.ciudad&&<div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Ciudad</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:F}}>{sol.ciudad}</div></div>}
+                  {sol.departamento&&<div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Departamento</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:F}}>{sol.departamento}</div></div>}
+                </div>
+              </div>
+              <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'14px 16px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:10}}>
+                  <svg fill="none" stroke="#64748b" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M9 12h6m-6 4h6M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                  <span style={{fontSize:11,fontWeight:700,color:'#374151',fontFamily:F}}>Información del contrato</span>
+                </div>
+                <div style={{display:'flex',flexDirection:'column' as const,gap:8}}>
+                  <div><div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Modalidad</div><div style={{fontSize:12.5,color:'#0f172a',fontFamily:F}}>{modalidadDisplay}</div></div>
+                  <div>
+                    <div style={{fontSize:10,fontWeight:700,color:'#374151',fontFamily:F,marginBottom:2}}>Fuente</div>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <div style={{fontSize:12.5,color:'#0f172a',fontFamily:F}}>{fuenteDisplay}</div>
+                      {urlFuente&&<a href={urlFuente} target="_blank" rel="noopener noreferrer" style={{width:22,height:22,borderRadius:6,border:'1px solid #e2e8f0',background:'white',display:'inline-flex',alignItems:'center',justifyContent:'center',color:'#64748b',textDecoration:'none'}} onMouseOver={e=>{(e.currentTarget as HTMLAnchorElement).style.borderColor='#1e5799';(e.currentTarget as HTMLAnchorElement).style.color='#1e5799';}} onMouseOut={e=>{(e.currentTarget as HTMLAnchorElement).style.borderColor='#e2e8f0';(e.currentTarget as HTMLAnchorElement).style.color='#64748b';}}><svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:11,height:11}}><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></a>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'14px 16px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:10}}>
+                  <svg fill="none" stroke="#64748b" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                  <span style={{fontSize:11,fontWeight:700,color:'#374151',fontFamily:F}}>Registro</span>
+                </div>
+                <div style={{display:'flex',flexDirection:'column' as const,gap:8}}>
+                  <div><div style={{fontSize:10,color:'#94a3b8',fontFamily:F,marginBottom:2}}>Registrado por</div><div style={{fontSize:12.5,fontWeight:600,color:'#0f172a',fontFamily:F}}>{sol.usuarioRegistro||'—'}</div>{sol.cargoRegistro&&<div style={{fontSize:11,color:'#64748b',fontFamily:F,marginTop:1}}>{sol.cargoRegistro}</div>}</div>
+                  <div><div style={{fontSize:10,color:'#94a3b8',fontFamily:F,marginBottom:2}}>Fecha de registro</div><div style={{fontSize:12,fontWeight:600,color:'#0f172a',fontFamily:F}}>{fmtFH(sol.createdAt)}</div></div>
+                  {sol.sqrNumero&&<div><div style={{fontSize:10,color:'#94a3b8',fontFamily:F,marginBottom:2}}>No. SQR</div><div style={{fontSize:12,fontWeight:600,color:'#475569',fontFamily:'monospace'}}>{sol.sqrNumero}</div></div>}
+                </div>
+              </div>
+            </div>
+          </>}
+
+          {tabActiva==='requisitos'&&(
+            <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'20px 24px'}}>
+              <div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:16,fontFamily:F}}>Requisitos del proceso</div>
+              {sol.observacion?<div style={{fontSize:13,color:FC,fontFamily:F,lineHeight:1.7,whiteSpace:'pre-wrap' as const}}>{sol.observacion}</div>:<div style={{textAlign:'center' as const,padding:'40px 0',color:'#94a3b8',fontSize:13,fontFamily:F}}>Sin requisitos registrados</div>}
+            </div>
+          )}
+
+          {tabActiva==='cronograma'&&(
+            <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'24px 28px'}}>
+              <div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.08em',marginBottom:20,fontFamily:F}}>Cronograma de fechas</div>
+              {(sol.fechaPublicacion||sol.fechaVencimiento||procDataEntries.length>0)
+                ?<div style={{display:'flex',flexDirection:'column' as const}}>
+                  {sol.fechaPublicacion&&<div style={{display:'flex',justifyContent:'space-between',padding:'12px 0',borderBottom:'1px solid #f1f5f9'}}><span style={{fontSize:11,color:'#374151',fontFamily:F}}>Fecha de publicación</span><span style={{fontSize:11,fontWeight:700,color:FC_DARK,fontFamily:F}}>{fmtFH(sol.fechaPublicacion)}</span></div>}
+                  {sol.fechaVencimiento&&<div style={{display:'flex',justifyContent:'space-between',padding:'12px 0',borderBottom:procDataEntries.length>0?'1px solid #f1f5f9':'none'}}><span style={{fontSize:11,color:'#374151',fontFamily:F}}>Fecha de vencimiento</span><span style={{fontSize:11,fontWeight:700,color:'#dc2626',fontFamily:F}}>{fmtFH(sol.fechaVencimiento)}</span></div>}
+                  {procDataEntries.map(([k, v], i) => {
+  const vv = safeRecord(v);
+  const obsCronograma = safeString(vv.obs, `Etapa ${i + 1}`);
+  const fechaInicioCronograma = safeString(vv.fechaI);
+  const fechaFinCronograma = safeString(vv.fechaF);
+
+  return (
+    <div
+      key={k}
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        padding: '12px 0',
+        borderBottom: i < procDataEntries.length - 1 ? '1px solid #f1f5f9' : 'none',
+      }}
+    >
+      <span
+        style={{
+          fontSize: 11,
+          color: '#374151',
+          fontFamily: F,
+          flex: 1,
+          paddingRight: 24,
+        }}
+      >
+        {obsCronograma}
+      </span>
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          color: FC_DARK,
+          fontFamily: F,
+          whiteSpace: 'nowrap' as const,
+        }}
+      >
+        {fechaInicioCronograma}
+        {fechaFinCronograma && fechaFinCronograma !== fechaInicioCronograma
+          ? ` → ${fechaFinCronograma}`
+          : ''}
+      </span>
+    </div>
+  );
+})}
+                </div>
+                :<div style={{textAlign:'center' as const,padding:'40px 0',color:'#94a3b8',fontSize:13,fontFamily:F}}>Sin cronograma registrado</div>
+              }
+            </div>
+          )}
+
+          {tabActiva==='documentacion'&&(
+            <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'16px 20px'}}>
+              <div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.08em',marginBottom:14,fontFamily:F}}>Documentos {docArr.length>0&&`(${docArr.length})`}</div>
+              {docArr.length>0
+                ?<div style={{display:'flex',flexDirection:'column' as const}}>
+                  {docArr.map((d: DocumentoDinamico, i: number) =>{
+                    const url=String(d.ruta||d.url||d.link||'');
+                    const ext=getDocExt(url,String(d.nombre||d.titulo||''));
+                    return(
+                      <div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'7px 0',borderBottom:i<docArr.length-1?'1px solid #f8fafc':'none'}}>
+                        <div style={{width:28,height:34,borderRadius:'2px 7px 2px 2px',background:ext.bg,border:`1px solid ${ext.color}20`,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:4,position:'relative' as const,flexShrink:0}}>
+                          <div style={{position:'absolute' as const,top:0,right:0,width:7,height:7,background:'white',borderLeft:`1px solid ${ext.color}20`,borderBottom:`1px solid ${ext.color}20`,borderRadius:'0 0 0 2px'}}/>
+                          <span style={{fontSize:6,fontWeight:800,color:ext.color,fontFamily:F}}>{ext.label}</span>
+                        </div>
+                        <div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const,fontFamily:F}}>{String(d.nombre||d.titulo||`Documento ${i+1}`)}</div></div>
+                        {url&&<a href={url} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:5,height:28,padding:'0 12px',borderRadius:7,background:'#1e5799',color:'white',fontSize:11,fontWeight:700,textDecoration:'none',fontFamily:F,flexShrink:0}}>
+                          <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                          Descargar
+                        </a>}
+                      </div>
+                    );
+                  })}
+                </div>
+                :<div style={{textAlign:'center' as const,padding:'40px 0',color:'#94a3b8',fontSize:13,fontFamily:F}}>Sin documentos disponibles</div>
+              }
+            </div>
+          )}
+
+          {tabActiva==='adendas'&&(
+            <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'16px 18px'}}>
+              <div style={{fontSize:11,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:12,fontFamily:F}}>Adendas {adendas.length>0&&<span style={{fontSize:10,fontWeight:700,background:'#1e5799',color:'white',padding:'1px 7px',borderRadius:999,marginLeft:6}}>{adendas.length}</span>}</div>
+              {cargandoAdendas?<div style={{fontSize:12,color:'#94a3b8',fontFamily:F}}>Cargando adendas…</div>
+                :adendas.length===0?<div style={{textAlign:'center' as const,padding:'20px 0',color:'#94a3b8',fontSize:12,fontFamily:F}}>Sin adendas detectadas</div>
+                :adendas.map((d,i)=>{
+                  const url=d.urlDocumento||'';const ext=getDocExt(url,d.nombre||'');
+                  const fecha=d.fechaDetectado?new Date(d.fechaDetectado).toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'}):'';
+                  return(
+                    <div key={d.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 0',borderBottom:i<adendas.length-1?'1px solid #f8fafc':'none'}}>
+                      <div style={{width:28,height:34,borderRadius:'2px 7px 2px 2px',background:ext.bg,border:`1px solid ${ext.color}20`,display:'flex',alignItems:'flex-end',justifyContent:'center',paddingBottom:4,position:'relative' as const,flexShrink:0}}>
+                        <div style={{position:'absolute' as const,top:0,right:0,width:7,height:7,background:'white',borderLeft:`1px solid ${ext.color}20`,borderBottom:`1px solid ${ext.color}20`,borderRadius:'0 0 0 2px'}}/>
+                        <span style={{fontSize:6,fontWeight:800,color:ext.color,fontFamily:F}}>{ext.label}</span>
+                      </div>
+                      <div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:600,color:'#1e293b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const,fontFamily:F}}>{d.nombre||'Sin nombre'}</div>{fecha&&<div style={{fontSize:10,color:'#94a3b8',fontFamily:F,marginTop:1}}>Detectado: {fecha}</div>}</div>
+                      {url&&<a href={url} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',gap:5,height:28,padding:'0 12px',borderRadius:7,background:'#1e5799',color:'white',fontSize:11,fontWeight:700,textDecoration:'none',fontFamily:F,flexShrink:0}}>
+                        <svg fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24" style={{width:10,height:10}}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        Descargar
+                      </a>}
+                    </div>
+                  );
+                })
+              }
+            </div>
+          )}
+        </div>
+
+        {/* Columna derecha — flujo asignación */}
+        <div style={{display:'flex',flexDirection:'column',gap:10,overflowY:'auto',scrollbarWidth:'thin' as const,scrollbarColor:'transparent transparent'}}
+          onMouseOver={e=>{(e.currentTarget as HTMLDivElement).style.scrollbarColor='#cbd5e1 transparent';}}
+          onMouseOut={e=>{(e.currentTarget as HTMLDivElement).style.scrollbarColor='transparent transparent';}}>
+
+          {/* Información del responsable asignado */}
+          <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'14px'}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:10,fontFamily:F}}>
+              Responsable asignado
+            </div>
+
+            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
+              <div style={{width:32,height:32,borderRadius:'50%',background:'#1e5799',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,flexShrink:0,fontFamily:F}}>
+                {analistaIniciales}
+              </div>
+
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:12.5,fontWeight:600,color:FC_DARK,fontFamily:F,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const}}>
+                  {analistaAsignadoTexto}
+                </div>
+                <div style={{fontSize:10.5,color:FC_LABEL,fontFamily:F}}>
+                  {analistaCargoTexto}
+                </div>
+              </div>
+            </div>
+
+            <div style={{display:'flex',flexDirection:'column' as const,gap:6}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span style={{fontSize:10,color:FC_LABEL,fontFamily:F}}>ID asignación</span>
+                <span style={{fontSize:10.5,fontWeight:600,color:'#475569',fontFamily:'monospace'}}>
+                  {idAsignacionTexto}
+                </span>
+              </div>
+
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span style={{fontSize:10,color:FC_LABEL,fontFamily:F}}>Fecha asignación</span>
+                <span style={{fontSize:10.5,color:FC_DARK,fontFamily:F}}>
+                  {fechaAsignacionTexto}
+                </span>
+              </div>
+
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span style={{fontSize:10,color:FC_LABEL,fontFamily:F}}>Asignado por</span>
+                <span style={{fontSize:10.5,color:FC_DARK,fontFamily:F}}>
+                  {asignadoPorTexto}
+                </span>
+              </div>
+            </div>
+          </div>
+          {/* Estado actual */}
+          <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'14px'}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#1e5799',textTransform:'uppercase' as const,letterSpacing:'0.07em',marginBottom:8,fontFamily:F}}>Estado de asignación</div>
+            <span style={{display:'inline-flex',alignItems:'center',fontSize:12,fontWeight:600,padding:'4px 12px',borderRadius:999,...estadoAsigColor(estadoAsig),fontFamily:F}}>
+              {estadoAsig}
+            </span>
+            {/* Resumen causa si está en observación */}
+            {estadoAsig === 'En observación' && tipoCausaTexto && (
+              <div style={{marginTop:10,padding:'8px 10px',background:'#fff7ed',borderRadius:7,border:'1px solid #fed7aa'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#92400e',fontFamily:F,marginBottom:3}}>
+                  Causa registrada
+                </div>
+                <div style={{fontSize:11.5,color:'#78350f',fontFamily:F}}>
+                  {tipoCausaTexto} → {causaEspecificaTexto}
+                </div>
+              </div>
+            )}
+            {/* Resumen resultado si está cerrada */}
+            {estadoAsig === 'Cerrada' && (
+            <div style={{marginTop:10,padding:'8px 10px',background:'#f0fdf4',borderRadius:7,border:'1px solid #bbf7d0'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#15803d',fontFamily:F,marginBottom:3}}>
+                {resultadoFinalTexto ? 'Resultado' : 'Cerrada por observación'}
+              </div>
+
+              {resultadoFinalTexto && (
+                <div style={{fontSize:11.5,fontWeight:600,color:'#14532d',fontFamily:F}}>
+                  {resultadoFinalTexto}
+                </div>
+              )}
+
+              {tipoCausaTexto && (
+                <div style={{fontSize:11,color:'#15803d',fontFamily:F,marginTop:2}}>
+                  {tipoCausaTexto} → {causaEspecificaTexto}
+                </div>
+              )}
+            </div>
+          )}
+          </div>
+
+          {/* Botones de flujo */}
+          {estadoAsig!=='Cerrada'&&(
+          <button
+            onClick={()=>setGestionAsig(asigActual)}
+              style={{width:'100%',height:40,borderRadius:10,background:'#1e5799',color:'white',border:'none',fontSize:13,fontWeight:700,fontFamily:F,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:7,transition:'all .15s',boxShadow:'0 2px 8px rgba(30,87,153,0.15)'}}
+              onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#174a85';}}
+              onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='#1e5799';}}>
+              <svg fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24" style={{width:14,height:14}}><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+              Gestionar asignación
+            </button>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   Módulo de asignaciones pendientes
+========================================================= */
 function ModuloAsignacionesPendientes({sesion}:{sesion:Sesion}){
   const [solicitudes,setSolicitudes]=React.useState<Solicitud[]>([]);
   const [cargando,setCargando]=React.useState(true);
   const [error,setError]=React.useState('');
   const [busqueda,setBusqueda]=React.useState('');
-  const [modalProceso,setModalProceso]=React.useState<Solicitud|null>(null);
+  const [fichaAbierta,setFichaAbierta]=React.useState<Solicitud|null>(null);
   const [seleccionados,setSeleccionados]=React.useState<number[]>([]);
   const [modalGestion,setModalGestion]=React.useState<{sol:Solicitud;asig:Record<string,unknown>}|null>(null);
-
 
   const cargar=React.useCallback(async()=>{
     setCargando(true);setError('');
@@ -5045,7 +6483,7 @@ function ModuloAsignacionesPendientes({sesion}:{sesion:Sesion}){
       if(!res.ok)throw new Error(data.error||'Error');
       const lista:Solicitud[]=Array.isArray(data.solicitudes)?data.solicitudes:Array.isArray(data)?data:[];
       const pendientes=lista.filter(s=>{
-        const asigs=Array.isArray(s.asignaciones)?s.asignaciones as Array<Record<string,unknown>>:[];
+        const asigs = safeArray<Record<string, unknown>>(s.asignaciones);
         return asigs.some(a=>String(a.estadoAsignacion||'').toLowerCase()==='pendiente');
       });
       setSolicitudes(pendientes);
@@ -5070,7 +6508,7 @@ function ModuloAsignacionesPendientes({sesion}:{sesion:Sesion}){
   });
 
   const getAnalista=(sol:Solicitud)=>{
-    const asigs=Array.isArray(sol.asignaciones)?sol.asignaciones as Array<Record<string,unknown>>:[];
+    const asigs = safeArray<Record<string, unknown>>(sol.asignaciones);
     const pendiente=asigs.filter(a=>String(a.estadoAsignacion||'').toLowerCase()==='pendiente').pop();
     return pendiente?{
       nombre:String(pendiente.analistaAsignado||'—'),
@@ -5097,39 +6535,41 @@ function ModuloAsignacionesPendientes({sesion}:{sesion:Sesion}){
   const toggleOne=(id:number,c:boolean)=>setSeleccionados(prev=>c?[...prev,id]:prev.filter(x=>x!==id));
 
   const COLS=[
-    {w:72,label:'N°'},
-    {w:120,label:'Estado'},
+    {w:60,label:'N°'},
+    {w:110,label:'Estado'},
     {w:52,label:'Ficha'},
     {w:90,label:'SQR'},
-    {w:148,label:'Fecha asignación'},
+    {w:130,label:'Fecha asignación'},
     {w:120,label:'Entidad grupo'},
-    {w:200,label:'Cliente'},
-    {w:135,label:'No. proceso'},
-    {w:248,label:'Descripción'},
-    {w:160,label:'Analista asignado'},
-    {w:114,label:'Vencimiento'},
-    {w:140,label:'Presupuesto'},
+    {w:180,label:'Cliente'},
+    {w:150,label:'No. proceso'},
+    {w:200,label:'Descripción'},
+    {w:150,label:'Analista asignado'},
+    {w:110,label:'Vencimiento'},
+    {w:130,label:'Presupuesto'},
   ];
 
   if(cargando)return<div className="content"><div className="module-status">Cargando asignaciones…</div></div>;
   if(error)return<div className="content"><div className="module-status error">{error}</div></div>;
 
+  if(fichaAbierta){
+    return(
+      <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
+        <VistFichaAsignacion
+        sol={fichaAbierta}
+        sesion={sesion}
+        onVolver={()=>setFichaAbierta(null)}
+        onGuardado={(updated)=>{
+          setSolicitudes(prev=>prev.map(s=>s.id===updated.id?updated:s));
+          setFichaAbierta(updated);
+        }}
+      />
+      </div>
+    );
+  }
+
   return(
     <>
-      {modalGestion&&<ModalGestionAsignacion
-      sol={modalGestion.sol}
-      asignacion={modalGestion.asig}
-      sesion={sesion}
-      onClose={()=>setModalGestion(null)}
-      onGuardado={(updated)=>{setSolicitudes(prev=>prev.map(s=>s.id===updated.id?updated:s));setModalGestion(null);cargar();}}
-      />}
-      {modalProceso&&<ModalProceso
-        sol={modalProceso}
-        sesion={sesion}
-        variante="COMERCIAL"
-        onClose={()=>setModalProceso(null)}
-        onGuardado={(updated)=>{setSolicitudes(prev=>prev.map(s=>s.id===updated.id?updated:s));setModalProceso(null);}}
-      />}
 
       <div className="content">
         <div className="page-header">
@@ -5168,26 +6608,49 @@ function ModuloAsignacionesPendientes({sesion}:{sesion:Sesion}){
                     const sqr=sqrDisplay(s);
                     const analista=getAnalista(s);
                     const dias=getDiasRestantes(s.fechaVencimiento||null);
-                    return (
-                    <tr key={s.id} onDoubleClick={()=>{const asigs=Array.isArray(s.asignaciones)?s.asignaciones as Array<Record<string,unknown>>:[];const asig=asigs[asigs.length-1];if(asig)setModalGestion({sol:s,asig});}} style={{cursor:'default'}}>
-                        <td className="center"><input type="checkbox" className="cbx" checked={seleccionados.includes(s.id)} onChange={e=>toggleOne(s.id,e.target.checked)}/></td>
-                        <td style={{fontWeight:700,color:'#374151',fontSize:13}}>{s.id}</td>
-                        <td><span className="badge" style={{background:ebc.bg,color:ebc.color,fontSize:11,padding:'3px 10px',borderRadius:20,fontWeight:600,whiteSpace:'nowrap'}}>{s.estadoSolicitud}</span></td>
+                    return(
+                      <tr key={s.id}
+                        onDoubleClick={()=>setFichaAbierta(s)}
+                        style={{cursor:'default'}}>
                         <td className="center">
-                          <button onClick={e=>{e.stopPropagation();const asigs=Array.isArray(s.asignaciones)?s.asignaciones as Array<Record<string,unknown>>:[];const asig=asigs[asigs.length-1];if(asig)setModalGestion({sol:s,asig});}} title="Ver ficha"
+                          <input type="checkbox" className="cbx" checked={seleccionados.includes(s.id)} onChange={e=>toggleOne(s.id,e.target.checked)}/>
+                        </td>
+                        <td style={{fontWeight:700,color:'#374151',fontSize:13}}>{s.id}</td>
+                        <td>
+                          <span className="badge" style={{background:ebc.bg,color:ebc.color,fontSize:11,padding:'3px 10px',borderRadius:20,fontWeight:600,whiteSpace:'nowrap'}}>
+                            {s.estadoSolicitud}
+                          </span>
+                        </td>
+                        <td className="center">
+                          <button
+                            onClick={e=>{e.stopPropagation();setFichaAbierta(s);}}
+                            title="Ver ficha"
                             style={{width:34,height:34,borderRadius:10,border:'1.5px solid #d1d5db',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#1a5ea8',transition:'all .15s'}}
                             onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#EAF2FB';(e.currentTarget as HTMLButtonElement).style.borderColor='#1a5ea8';}}
                             onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';(e.currentTarget as HTMLButtonElement).style.borderColor='#d1d5db';}}>
                             <svg fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" style={{width:17,height:17}}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
                           </button>
                         </td>
-                        <td><span style={{display:'inline-flex',alignItems:'center',fontSize:10.5,fontWeight:700,padding:'3px 9px',borderRadius:20,background:sqr.bg,color:sqr.color,whiteSpace:'nowrap',fontFamily:'monospace'}}>{sqr.label}</span></td>
+                        <td>
+                          <span style={{display:'inline-flex',alignItems:'center',fontSize:10.5,fontWeight:700,padding:'3px 9px',borderRadius:20,background:sqr.bg,color:sqr.color,whiteSpace:'nowrap',fontFamily:'monospace'}}>
+                            {sqr.label}
+                          </span>
+                        </td>
                         <td style={{fontSize:12,color:'#64748b',whiteSpace:'nowrap'}}>{analista?.fecha||'—'}</td>
-                        <td>{pc?<span style={{fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:20,background:pc.bg,color:pc.color,whiteSpace:'nowrap'}}>{pc.label}</span>:<span style={{fontSize:12,color:'#374151'}}>—</span>}</td>
-                        <td style={{fontSize:12,fontWeight:500,color:'#1e293b'}}>{s.entidad||'—'}</td>
-                        <td style={{fontFamily:'monospace',fontSize:11,color:'#475569'}}>{s.codigoProceso||'—'}</td>
-                        <td style={{maxWidth:248}} title={s.objeto||''}>
-                          <div style={{fontSize:12,color:'#374151',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:248}}>
+                        <td>
+                          {pc
+                            ?<span style={{fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:20,background:pc.bg,color:pc.color,whiteSpace:'nowrap'}}>{pc.label}</span>
+                            :<span style={{fontSize:12,color:'#374151'}}>—</span>
+                          }
+                        </td>
+                        <td style={{fontSize:12,fontWeight:500,color:'#1e293b',maxWidth:180}}>
+                          <div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                            {s.entidad||'—'}
+                          </div>
+                        </td>
+                        <td style={{fontFamily:'monospace',fontSize:11,color:'#475569',whiteSpace:'nowrap'}}>{s.codigoProceso||'—'}</td>
+                        <td style={{maxWidth:200}} title={s.objeto||''}>
+                          <div style={{fontSize:12,color:'#374151',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:200}}>
                             {s.objeto?(s.objeto.charAt(0).toUpperCase()+s.objeto.slice(1).toLowerCase()):'—'}
                           </div>
                         </td>
@@ -5203,9 +6666,11 @@ function ModuloAsignacionesPendientes({sesion}:{sesion:Sesion}){
                           {s.fechaVencimiento?(
                             <div>
                               <div style={{fontSize:12,color:'#1e293b'}}>{fmtFecha(s.fechaVencimiento)}</div>
-                              {dias!==null&&<div style={{fontSize:10.5,fontWeight:600,color:dias<0?'#dc2626':dias<=3?'#d97706':'#64748b'}}>
-                                {dias<0?'Vencido':dias===0?'Hoy':dias===1?'Mañana':`${dias} días`}
-                              </div>}
+                              {dias!==null&&(
+                                <div style={{fontSize:10.5,fontWeight:600,color:dias<0?'#dc2626':dias<=3?'#d97706':'#64748b'}}>
+                                  {dias<0?'Vencido':dias===0?'Hoy':dias===1?'Mañana':`${dias} días`}
+                                </div>
+                              )}
                             </div>
                           ):'—'}
                         </td>
@@ -5226,147 +6691,314 @@ function ModuloAsignacionesPendientes({sesion}:{sesion:Sesion}){
   );
 }
 
+/* =========================================================
+   MÓDULO ASIGNACIONES TERMINADAS
+========================================================= */
+function ModuloAsignacionesTerminadas({sesion}:{sesion:Sesion}){
+  const [solicitudes,setSolicitudes]=React.useState<Solicitud[]>([]);
+  const [cargando,setCargando]=React.useState(true);
+  const [error,setError]=React.useState('');
+  const [busqueda,setBusqueda]=React.useState('');
+  const [fichaAbierta,setFichaAbierta]=React.useState<Solicitud|null>(null);
+  const [seleccionados,setSeleccionados]=React.useState<number[]>([]);
+
+  const cargar=React.useCallback(async()=>{
+    setCargando(true);setError('');
+    try{
+      const res=await fetch('/api/solicitudes?estadoSolicitud=Cerrada&limit=200');
+      const data=await res.json();
+      if(!res.ok)throw new Error(data.error||'Error');
+      const lista:Solicitud[]=Array.isArray(data.solicitudes)?data.solicitudes:Array.isArray(data)?data:[];
+      const cerradas=lista.filter(s=>{
+        const asigs = safeArray<Record<string, unknown>>(s.asignaciones);
+        return asigs.some(a=>{
+          const estado=String(a.estadoAsignacion||'').toLowerCase();
+          return estado==='cerrada'||estado==='cerrado'||estado==='cerrada'||estado==='cerrado';
+        });
+      });
+      setSolicitudes(cerradas);
+    }catch(e){setError(e instanceof Error?e.message:'Error al cargar');}
+    finally{setCargando(false);}
+  },[]);
+
+  React.useEffect(()=>{cargar();},[cargar]);
+
+  const fmtFecha=(r:string|null)=>{if(!r)return'—';const d=new Date(r);return isNaN(d.getTime())?r:d.toLocaleDateString('es-CO',{day:'2-digit',month:'2-digit',year:'numeric'});};
+  const fmtV=(v:number|null)=>{if(v==null||isNaN(v)||v===0)return'—';return new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',minimumFractionDigits:0}).format(v);};
+
+  const filtradas=solicitudes.filter(s=>{
+    if(!busqueda)return true;
+    const q=busqueda.toLowerCase();
+    return(
+      (s.entidad||'').toLowerCase().includes(q)||
+      (s.codigoProceso||'').toLowerCase().includes(q)||
+      (s.objeto||'').toLowerCase().includes(q)||
+      (s.ciudad||'').toLowerCase().includes(q)
+    );
+  });
+
+  const getUltimaAsignacion=(sol:Solicitud)=>{
+    const asigs = safeArray<Record<string, unknown>>(sol.asignaciones);
+    const cerrada=asigs.filter(a=>{
+      const estado=String(a.estadoAsignacion||'').toLowerCase();
+      return estado==='cerrada'||estado==='cerrado'||estado==='cerrada'||estado==='cerrado';
+    }).pop();
+    return cerrada?{
+      nombre:String(cerrada.analistaAsignado||'—'),
+      cargo:String(cerrada.analistaCargo||''),
+      fecha:String(cerrada.fechaAsignacion||'').slice(0,10),
+      id:String(cerrada.idAsignacion||''),
+      estado:String(cerrada.estadoAsignacion||''),
+      resultado:String(cerrada.resultadoFinal||'—'),
+      causa:String(cerrada.tipoCausa||''),
+      causaEsp:String(cerrada.causaEspecifica||''),
+    }:null;
+  };
+
+  const sqrDisplay=(s:Solicitud)=>{
+    if(s.sqrError)return{label:'Error SQR',bg:'#fef2f2',color:'#dc2626'};
+    if(s.sqrNumero)return{label:s.sqrNumero,bg:'#E8F5E9',color:'#475569'};
+    return{label:'Sin SQR',bg:'#f1f5f9',color:'#94a3b8'};
+  };
+
+  const todosMarcados=filtradas.length>0&&filtradas.every(s=>seleccionados.includes(s.id));
+  const toggleAll=(c:boolean)=>setSeleccionados(c?filtradas.map(s=>s.id):[]);
+  const toggleOne=(id:number,c:boolean)=>setSeleccionados(prev=>c?[...prev,id]:prev.filter(x=>x!==id));
+
+  const COLS=[
+    {w:60,label:'N°'},
+    {w:110,label:'Estado'},
+    {w:52,label:'Ficha'},
+    {w:90,label:'SQR'},
+    {w:130,label:'Fecha asignación'},
+    {w:120,label:'Entidad grupo'},
+    {w:180,label:'Cliente'},
+    {w:150,label:'No. proceso'},
+    {w:200,label:'Descripción'},
+    {w:150,label:'Analista'},
+    {w:140,label:'Resultado'},
+    {w:130,label:'Presupuesto'},
+  ];
+
+  if(cargando)return<div className="content"><div className="module-status">Cargando asignaciones cerradas…</div></div>;
+  if(error)return<div className="content"><div className="module-status error">{error}</div></div>;
+
+  if(fichaAbierta){
+    return(
+      <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
+        <VistFichaAsignacion
+        sol={fichaAbierta}
+        sesion={sesion}
+        onVolver={()=>setFichaAbierta(null)}
+        onGuardado={(updated)=>{
+          setSolicitudes(prev=>prev.map(s=>s.id===updated.id?updated:s));
+          setFichaAbierta(updated);
+        }}
+      />
+      </div>
+    );
+  }
+
+  return(
+    <div className="content">
+      <div className="page-header">
+        <div className="page-title">
+          <IcoAsignaciones/>
+          <span>Asignaciones cerradas : {filtradas.length} / {solicitudes.length}</span>
+        </div>
+        <div className="page-actions">
+          <input type="text" className="search-box" placeholder="Buscar…" value={busqueda} onChange={e=>setBusqueda(e.target.value)}/>
+          <button className="icon-btn" title="Actualizar" onClick={()=>{setBusqueda('');cargar();}}><IcoRefresh/></button>
+        </div>
+      </div>
+
+      <div className="table-card">
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th style={{width:36}}>
+                  <div className="th-top">
+                    <input type="checkbox" className="cbx" checked={todosMarcados} onChange={e=>toggleAll(e.target.checked)}/>
+                  </div>
+                </th>
+                {COLS.map(({w,label})=><th key={label} style={{minWidth:w}}><div className="th-top">{label}</div></th>)}
+              </tr>
+              <tr><th/>{COLS.map(({label})=><th key={label}><div style={{padding:'0 10px 5px',color:'#d1d5db',fontSize:11}}>≡</div></th>)}</tr>
+            </thead>
+            <tbody>
+              {filtradas.length===0
+                ?<tr><td colSpan={COLS.length+1} style={{textAlign:'center',color:'#6b7280',padding:'36px 10px',fontSize:13}}>
+                  No hay asignaciones cerradas.
+                </td></tr>
+                :filtradas.map(s=>{
+                  const ebc=estadoSolicitudColor(s.estadoSolicitud||'');
+                  const pc=s.perfil?perfilColor(s.perfil):null;
+                  const sqr=sqrDisplay(s);
+                  const asig=getUltimaAsignacion(s);
+                  const resultado=asig?.resultado||'—';
+                  const resultadoColor=resultado==='Adjudicado'?{bg:'#E3F2FD',color:'#0D47A1'}:resultado==='No adjudicado'?{bg:'#FFEBEE',color:'#B71C1C'}:resultado==='No presentado'?{bg:'#FFF8E1',color:'#E65100'}:{bg:'#f1f5f9',color:'#475569'};
+                  return(
+                    <tr key={s.id}
+                      onDoubleClick={()=>setFichaAbierta(s)}
+                      style={{cursor:'default'}}>
+                      <td className="center">
+                        <input type="checkbox" className="cbx" checked={seleccionados.includes(s.id)} onChange={e=>toggleOne(s.id,e.target.checked)}/>
+                      </td>
+                      <td style={{fontWeight:700,color:'#374151',fontSize:13}}>{s.id}</td>
+                      <td>
+                        <span className="badge" style={{background:ebc.bg,color:ebc.color,fontSize:11,padding:'3px 10px',borderRadius:20,fontWeight:600,whiteSpace:'nowrap'}}>
+                          {s.estadoSolicitud}
+                        </span>
+                      </td>
+                      <td className="center">
+                        <button
+                          onClick={e=>{e.stopPropagation();setFichaAbierta(s);}}
+                          title="Ver ficha"
+                          style={{width:34,height:34,borderRadius:10,border:'1.5px solid #d1d5db',background:'white',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',color:'#1a5ea8',transition:'all .15s'}}
+                          onMouseOver={e=>{(e.currentTarget as HTMLButtonElement).style.background='#EAF2FB';(e.currentTarget as HTMLButtonElement).style.borderColor='#1a5ea8';}}
+                          onMouseOut={e=>{(e.currentTarget as HTMLButtonElement).style.background='white';(e.currentTarget as HTMLButtonElement).style.borderColor='#d1d5db';}}>
+                          <svg fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" style={{width:17,height:17}}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                        </button>
+                      </td>
+                      <td>
+                        <span style={{display:'inline-flex',alignItems:'center',fontSize:10.5,fontWeight:700,padding:'3px 9px',borderRadius:20,background:sqr.bg,color:sqr.color,whiteSpace:'nowrap',fontFamily:'monospace'}}>
+                          {sqr.label}
+                        </span>
+                      </td>
+                      <td style={{fontSize:12,color:'#64748b',whiteSpace:'nowrap'}}>{asig?.fecha||'—'}</td>
+                      <td>
+                        {pc
+                          ?<span style={{fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:20,background:pc.bg,color:pc.color,whiteSpace:'nowrap'}}>{pc.label}</span>
+                          :<span style={{fontSize:12,color:'#374151'}}>—</span>
+                        }
+                      </td>
+                      <td style={{fontSize:12,fontWeight:500,color:'#1e293b',maxWidth:180}}>
+                        <div style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                          {s.entidad||'—'}
+                        </div>
+                      </td>
+                      <td style={{fontFamily:'monospace',fontSize:11,color:'#475569',whiteSpace:'nowrap'}}>{s.codigoProceso||'—'}</td>
+                      <td style={{maxWidth:200}} title={s.objeto||''}>
+                        <div style={{fontSize:12,color:'#374151',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:200}}>
+                          {s.objeto?(s.objeto.charAt(0).toUpperCase()+s.objeto.slice(1).toLowerCase()):'—'}
+                        </div>
+                      </td>
+                      <td style={{fontSize:12,color:'#1e293b'}}>
+                        {asig?(
+                          <div>
+                            <div style={{fontWeight:600}}>{asig.nombre}</div>
+                            <div style={{fontSize:10.5,color:'#94a3b8'}}>{asig.id}</div>
+                          </div>
+                        ):'—'}
+                      </td>
+                      <td>
+                        <span style={{display:'inline-flex',alignItems:'center',fontSize:11,fontWeight:600,padding:'3px 10px',borderRadius:20,background:resultadoColor.bg,color:resultadoColor.color,whiteSpace:'nowrap'}}>
+                          {resultado}
+                        </span>
+                      </td>
+                      <td style={{fontSize:12,fontWeight:600,color:'#475569',whiteSpace:'nowrap'}}>{fmtV(s.valor)}</td>
+                    </tr>
+                  );
+                })
+              }
+            </tbody>
+          </table>
+        </div>
+        <div className="pagination-bar">
+          <span>{filtradas.length} de {solicitudes.length} asignaciones</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function LicycolbaPage() {
   const [sesionCargada, setSesionCargada] = useState(false);
   const [sesion, setSesion] = useState<Sesion | null>(null);
-
   const [collapsed, setCollapsed] = useState(false);
-  const [activeModule, setActiveModule] = useState('procesosNuevos');
+  const [activeModule, setActiveModule] = useState('dashboard');
   const [openAccordion, setOpenAccordion] = useState<string | null>('busqueda');
 
   useEffect(() => {
     const raw = sessionStorage.getItem('licycolba_sesion');
-
     if (raw) {
-      try {
-        setSesion(JSON.parse(raw));
-      } catch {
-        setSesion(null);
-      }
+      try { setSesion(JSON.parse(raw)); } catch { setSesion(null); }
     }
-
     setSesionCargada(true);
   }, []);
 
-  const borrarSesion = () => {
-    sessionStorage.removeItem('licycolba_sesion');
-    setSesion(null);
-  };
-
-  const handleLogin = (s: Sesion) => {
-    sessionStorage.setItem('licycolba_sesion', JSON.stringify(s));
-    setSesion(s);
-  };
-
-  const handleSesionActualizada = (s: Sesion) => {
-    sessionStorage.setItem('licycolba_sesion', JSON.stringify(s));
-    setSesion(s);
-  };
-
-  const handleAccordionToggle = (key: string) => {
-    setOpenAccordion((prev) => (prev === key ? null : key));
-  };
+  const borrarSesion = () => { sessionStorage.removeItem('licycolba_sesion'); setSesion(null); };
+  const handleLogin = (s: Sesion) => { sessionStorage.setItem('licycolba_sesion', JSON.stringify(s)); setSesion(s); };
+  const handleSesionActualizada = (s: Sesion) => { sessionStorage.setItem('licycolba_sesion', JSON.stringify(s)); setSesion(s); };
+  const handleAccordionToggle = (key: string) => { setOpenAccordion((prev) => (prev === key ? null : key)); };
 
   if (!sesionCargada) return null;
+  if (!sesion) return <PantallaLogin onLogin={handleLogin} />;
 
-  if (!sesion) {
-    return <PantallaLogin onLogin={handleLogin} />;
-  }
+  // ─── Permisos derivados del rol de sesión ──────────────────────────────────
+  // Centraliza las constantes de permisos para no repetir llamadas a puede()
+  // dispersas en el JSX. Agregar aquí nuevas constantes según se necesiten.
+  const rol = sesion.rol;
+  const puedeVerBusqueda            = puedeVerModulo(rol, 'busqueda');
+  const puedeCrearSolicitud         = puede(rol, 'busqueda', 'crear');
+  const puedeGestionarBusqueda      = puede(rol, 'busqueda', 'gestionar');
+  const puedeVerSolicitudesComercial= puedeVerModulo(rol, 'solicitudesComercial');
+  const puedeEditarSolicitud        = puede(rol, 'solicitudesComercial', 'editar');
+  const puedeVerAsignaciones        = puedeVerModulo(rol, 'asignaciones');
+  const puedeAsignar                = puede(rol, 'asignaciones', 'asignar');
+  const puedeReasignar              = puede(rol, 'asignaciones', 'reasignar');
+  const puedeGestionarAsignacion    = puede(rol, 'asignaciones', 'gestionar');
+  const puedeEliminar               = puede(rol, 'solicitudesComercial', 'eliminar');
+  const puedeAdministrarUsuarios    = puede(rol, 'usuarios', 'administrar');
+  const soloLectura                 = esSoloLectura(rol);
+
 
   const renderContent = () => {
-  switch (activeModule) {
-    case 'procesosNuevos':
-      return (
-        <ModuloProcesoNuevos
-          sesion={sesion}
-          onModuleChange={setActiveModule}
-        />
-      );
+    switch (activeModule) {
+      case 'procesosNuevos': return <ModuloProcesoNuevos sesion={sesion} onModuleChange={setActiveModule} puedeGestionar={puedeGestionarBusqueda}/>;
+      case 'busquedaFinal': return <ModuloBusquedaFinal onModuleChange={setActiveModule} sesion={sesion} puedeGestionar={puedeGestionarBusqueda}/>;
+      case 'solicitudesAbiertas': return <ModuloSolicitudesComercial sesion={sesion}/>;
+      case 'solicitudesComercial': return <ModuloSolicitudesComercial sesion={sesion}/>;
+      case 'solicitudesEspecializada': return <ModuloSolicitudesEspecializada sesion={sesion}/>;
+      case 'solicitudesRechazadas': return <ModuloSolicitudesRechazadas sesion={sesion}/>;
+      case 'solicitudesEliminadas': return <ModuloSolicitudesEliminadas/>;
+      case 'solicitudesTodas': return <ModuloSolicitudesTodas sesion={sesion}/>;
+      case 'usuarios': return <ModuloUsuarios sesion={sesion} onSesionActualizada={handleSesionActualizada}/>;
+      case 'perfiles': return <ModuloPerfiles sesion={sesion}/>;
+      case 'usuariosEliminados': return <ModuloUsuariosEliminados/>;
+      case 'examenesMedicos': return <ModuloExamenesMedicos/>;
+      case 'dashboard': return <Placeholder nombre="Dashboard"/>;
+      case 'trm': return <Placeholder nombre="TRM — Tasa de Cambio"/>;
+      case 'asignacionesPendientes': return <ModuloAsignacionesPendientes sesion={sesion}/>;
+      case 'asignacionesCerradas': return <ModuloAsignacionesTerminadas sesion={sesion}/>;
+      default: return <Placeholder nombre={activeModule}/>;
+    }
+  };
 
-    case 'busquedaFinal':
-      return (
-        <ModuloBusquedaFinal
-          onModuleChange={setActiveModule}
-          sesion={sesion}
-        />
-      );
-
-    case 'solicitudesAbiertas':
-      return <ModuloSolicitudesComercial sesion={sesion} />;
-
-    case 'solicitudesComercial':
-      return <ModuloSolicitudesComercial sesion={sesion} />;
-
-    case 'solicitudesEspecializada':
-      return <ModuloSolicitudesEspecializada sesion={sesion} />;
-
-    case 'solicitudesRechazadas':
-      return <ModuloSolicitudesRechazadas sesion={sesion} />;
-
-    case 'solicitudesEliminadas':
-      return <ModuloSolicitudesEliminadas />;
-
-    case 'solicitudesTodas':
-      return <ModuloSolicitudesTodas sesion={sesion} />;
-
-    case 'usuarios':
-      return (
-        <ModuloUsuarios
-          sesion={sesion}
-          onSesionActualizada={handleSesionActualizada}
-        />
-      );
-
-    case 'usuariosEliminados':
-      return <ModuloUsuariosEliminados />;
-
-    case 'examenesMedicos':
-      return <ModuloExamenesMedicos />;
-
-    case 'dashboard':
-      return <Placeholder nombre="Dashboard" />;
-
-    case 'trm':
-      return <Placeholder nombre="TRM — Tasa de Cambio" />;
-
-      case 'asignacionesPendientes':
   return (
-    <ModuloAsignacionesPendientes sesion={sesion}/>
-  );
-
-case 'asignacionesTerminadas':
-  return <Placeholder nombre="Asignaciones terminadas" />;
-
-    default:
-      return <Placeholder nombre={activeModule} />;
-  }
-};
-
-return (
-  <div className="app">
-    <Sidebar
-      collapsed={collapsed}
-      onToggle={() => setCollapsed((c) => !c)}
-      activeModule={activeModule}
-      onModuleChange={setActiveModule}
-      openAccordion={openAccordion}
-      onAccordionToggle={handleAccordionToggle}
-      sesion={sesion}
-      onLogout={borrarSesion}
-    />
-
-    <main className="main">
-      <LicyTopbar
-        moduloActual={activeModule}
+    <div className="app">
+      <Sidebar
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((c) => !c)}
+        activeModule={activeModule}
+        onModuleChange={setActiveModule}
+        openAccordion={openAccordion}
+        onAccordionToggle={handleAccordionToggle}
         sesion={sesion}
         onLogout={borrarSesion}
-        onBuscarGlobal={(texto) => console.log('búsqueda global:', texto)}
       />
-
-      <div className="main-content-scroll">
-        {renderContent()}
-      </div>
-    </main>
-  </div>
-);
+      <main className="main">
+        <LicyTopbar
+          moduloActual={activeModule}
+          sesion={sesion}
+          onLogout={borrarSesion}
+          onBuscarGlobal={(texto) => console.log('búsqueda global:', texto)}
+        />
+        <div className="main-content-scroll">
+          {renderContent()}
+        </div>
+      </main>
+    </div>
+  );
 }
