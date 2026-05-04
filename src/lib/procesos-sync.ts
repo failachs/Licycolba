@@ -1,6 +1,6 @@
 /**
  * src/lib/procesos-sync.ts
- * Sincronización inteligente con Licitaciones.Info.
+ * Sincronización centralizada de procesos desde Licitaciones.Info.
  */
 
 import crypto from 'crypto';
@@ -32,7 +32,18 @@ export interface SyncMetrics {
   duracionMs: number;
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+type DocumentoSync = {
+  nombre: string;
+  ruta: string;
+  url: string;
+};
+
+type CronogramaSync = {
+  nombre: string;
+  fecha: string;
+};
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 function hashProceso(p: ReturnType<typeof normalizarProceso>): string {
   const campos = [
@@ -40,6 +51,7 @@ function hashProceso(p: ReturnType<typeof normalizarProceso>): string {
     p.nombre ?? '',
     p.entidad ?? '',
     p.objeto ?? '',
+    p.duracion ?? '',
     p.fuente ?? '',
     p.aliasFuente ?? '',
     p.modalidad ?? '',
@@ -88,9 +100,9 @@ function parseValor(valor: unknown): number | null {
 
   if (typeof valor === 'string') {
     const limpio = valor.replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.');
-    const n = Number(limpio);
+    const parsed = Number(limpio);
 
-    return Number.isFinite(n) ? n : null;
+    return Number.isFinite(parsed) ? parsed : null;
   }
 
   return null;
@@ -115,8 +127,8 @@ function buildSourceKey(raw: LiciProcesoRaw, p: ReturnType<typeof normalizarProc
 }
 
 /**
- * Normaliza el código del proceso cuando la fuente no entrega identificador explícito.
- * Para procesos NC, el nombre funciona como identificador operativo cuando codigoProceso viene vacío.
+ * Normaliza código de proceso cuando la fuente no entrega identificador explícito.
+ * Para procesos NC, el nombre funciona como identificador operativo.
  */
 function resolverCodigoProceso(params: {
   codigoProceso?: string | null;
@@ -137,19 +149,123 @@ function resolverCodigoProceso(params: {
 }
 
 /**
- * Respeta el linkDetalle editado manualmente en base de datos.
- * Si ya existe un valor en BD, no se reemplaza por el valor de la API.
+ * Conserva el linkDetalle cargado manualmente en base de datos.
+ * El valor existente en BD tiene prioridad sobre el valor de la API.
  */
 function resolverLinkDetalle(
   enBD: string | null | undefined,
   deAPI: string | null | undefined
 ): string | null {
-  const bdVal = (enBD ?? '').trim();
+  const bdVal = String(enBD ?? '').trim();
   if (bdVal) return bdVal;
 
-  const apiVal = (deAPI ?? '').trim();
-
+  const apiVal = String(deAPI ?? '').trim();
   return apiVal || null;
+}
+
+function normalizarTexto(value: unknown): string {
+  return String(value ?? '')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function normalizarTextoKey(value: unknown): string {
+  return normalizarTexto(value)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function normalizarUrl(value: unknown): string {
+  return String(value ?? '')
+    .trim()
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, '');
+}
+
+/**
+ * Deduplica documentos antes de comparar o insertar.
+ * La clave prioriza URL; si no existe URL, usa el nombre.
+ */
+function deduplicarDocumentos(documentos: DocumentoSync[]): DocumentoSync[] {
+  const vistos = new Set<string>();
+  const resultado: DocumentoSync[] = [];
+
+  for (const doc of documentos) {
+    const nombre = normalizarTexto(doc.nombre);
+    const url = normalizarUrl(doc.url || doc.ruta);
+    const ruta = normalizarUrl(doc.ruta || doc.url);
+
+    if (!nombre && !url && !ruta) continue;
+
+    const keyUrl = url || ruta;
+    const keyNombre = normalizarTextoKey(nombre);
+    const key = keyUrl ? `url:${keyUrl.toLowerCase()}` : `nombre:${keyNombre}`;
+
+    if (!key || vistos.has(key)) continue;
+
+    vistos.add(key);
+    resultado.push({
+      nombre: nombre || 'Sin nombre',
+      ruta,
+      url: url || ruta,
+    });
+  }
+
+  return resultado;
+}
+
+/**
+ * Deduplica cronogramas por evento + fecha.
+ */
+function deduplicarCronogramas(cronogramas: CronogramaSync[]): CronogramaSync[] {
+  const vistos = new Set<string>();
+  const resultado: CronogramaSync[] = [];
+
+  for (const item of cronogramas) {
+    const nombre = normalizarTexto(item.nombre);
+    const fecha = normalizarTexto(item.fecha);
+
+    if (!nombre && !fecha) continue;
+
+    const key = `${normalizarTextoKey(nombre)}|${normalizarTextoKey(fecha)}`;
+    if (vistos.has(key)) continue;
+
+    vistos.add(key);
+    resultado.push({
+      nombre: nombre || 'Etapa sin nombre',
+      fecha,
+    });
+  }
+
+  return resultado;
+}
+
+async function recalcularTotalesProceso(procesoId: number): Promise<{
+  totalDocumentos: number;
+  totalCronogramas: number;
+}> {
+  const [totalDocumentos, totalCronogramas] = await Promise.all([
+    prisma.procesoDocumentoSecop.count({
+      where: { procesoId },
+    }),
+    prisma.procesoCronogramaSecop.count({
+      where: { procesoId },
+    }),
+  ]);
+
+  await prisma.proceso.update({
+    where: { id: procesoId },
+    data: {
+      totalDocumentos,
+      totalCronogramas,
+    },
+  });
+
+  return {
+    totalDocumentos,
+    totalCronogramas,
+  };
 }
 
 async function sincronizarDocumentos(
@@ -158,59 +274,71 @@ async function sincronizarDocumentos(
   entidad: string | null,
   perfil: string | null,
   sourceKey: string,
-  documentos: Array<{ nombre: string; ruta: string; url: string }>
+  documentos: DocumentoSync[]
 ): Promise<number> {
+  const documentosNormalizados = deduplicarDocumentos(documentos);
+
+  if (documentosNormalizados.length === 0) return 0;
+
   let nuevos = 0;
 
-  for (const doc of documentos) {
-    const url = doc.url || doc.ruta || '';
-    const nombre = doc.nombre || '';
+  const existentes = await prisma.procesoDocumentoSecop.findMany({
+    where: { procesoId },
+    select: {
+      id: true,
+      nombre: true,
+      urlDocumento: true,
+    },
+  });
 
-    if (!url && !nombre) continue;
+  const keysExistentes = new Set<string>();
+
+  for (const doc of existentes) {
+    const url = normalizarUrl(doc.urlDocumento);
+    const nombre = normalizarTextoKey(doc.nombre);
+    const key = url ? `url:${url.toLowerCase()}` : `nombre:${nombre}`;
+    keysExistentes.add(key);
+  }
+
+  for (const doc of documentosNormalizados) {
+    const url = normalizarUrl(doc.url || doc.ruta);
+    const nombre = normalizarTexto(doc.nombre);
+    const key = url ? `url:${url.toLowerCase()}` : `nombre:${normalizarTextoKey(nombre)}`;
+
+    if (keysExistentes.has(key)) continue;
 
     try {
-      const existing = await prisma.procesoDocumentoSecop.findFirst({
-        where: {
+      const nuevo = await prisma.procesoDocumentoSecop.create({
+        data: {
           procesoId,
-          OR: [
-            ...(url ? [{ urlDocumento: url }] : []),
-            ...(nombre ? [{ nombre }] : []),
-          ],
+          nombre: nombre || 'Sin nombre',
+          urlDocumento: url || null,
+          fechaDetectado: new Date(),
         },
       });
 
-      if (!existing) {
-        const nuevo = await prisma.procesoDocumentoSecop.create({
-          data: {
-            procesoId,
-            nombre: nombre || 'Sin nombre',
+      keysExistentes.add(key);
+      nuevos++;
+
+      console.log('[sync] documento nuevo', codigoProceso, nombre);
+
+      await prisma.notificacion.create({
+        data: {
+          tipo: 'documento_nuevo',
+          titulo: 'Nuevo documento detectado',
+          descripcion: `Se detectó un nuevo documento en el proceso ${codigoProceso ?? '—'}: ${nombre}.`,
+          codigoProceso,
+          procesoId,
+          entidad,
+          perfil,
+          datos: {
+            sourceKey,
+            documentoId: nuevo.id,
+            nombreDocumento: nombre,
             urlDocumento: url || null,
-            fechaDetectado: new Date(),
           },
-        });
-
-        nuevos++;
-
-        console.log('[sync] documento nuevo', codigoProceso, nombre);
-
-        await prisma.notificacion.create({
-          data: {
-            tipo: 'documento_nuevo',
-            titulo: 'Nuevo documento detectado',
-            descripcion: `Se detectó un nuevo documento en el proceso ${codigoProceso ?? '—'}: ${nombre}.`,
-            codigoProceso,
-            procesoId,
-            entidad,
-            perfil,
-            datos: {
-              sourceKey,
-              documentoId: nuevo.id,
-              nombreDocumento: nombre,
-              urlDocumento: url || null,
-            },
-          },
-        });
-      }
+        },
+      });
     } catch (err) {
       console.warn(
         '[sync] error documento',
@@ -221,46 +349,84 @@ async function sincronizarDocumentos(
     }
   }
 
+  if (nuevos > 0) {
+    console.log('[sync] documentos sincronizados', codigoProceso, {
+      recibidos: documentos.length,
+      normalizados: documentosNormalizados.length,
+      nuevos,
+    });
+  }
+
   return nuevos;
 }
 
 async function sincronizarCronograma(
   procesoId: number,
   codigoProceso: string | null,
-  cronogramas: Array<{ nombre: string; fecha: string }>
+  cronogramas: CronogramaSync[]
 ): Promise<boolean> {
-  if (cronogramas.length === 0) return false;
+  const cronogramasNormalizados = deduplicarCronogramas(cronogramas);
 
   try {
     const existentes = await prisma.procesoCronogramaSecop.findMany({
       where: { procesoId },
-      select: { evento: true, valorTexto: true },
+      select: {
+        evento: true,
+        valorTexto: true,
+      },
     });
 
     const hashExistente = crypto
       .createHash('md5')
-      .update(JSON.stringify(existentes.map((e) => `${e.evento}|${e.valorTexto}`).sort()))
+      .update(
+        JSON.stringify(
+          existentes
+            .map((e) => {
+              const evento = normalizarTextoKey(e.evento);
+              const fecha = normalizarTextoKey(e.valorTexto);
+              return `${evento}|${fecha}`;
+            })
+            .sort()
+        )
+      )
       .digest('hex');
 
     const hashNuevo = crypto
       .createHash('md5')
-      .update(JSON.stringify(cronogramas.map((c) => `${c.nombre}|${c.fecha}`).sort()))
+      .update(
+        JSON.stringify(
+          cronogramasNormalizados
+            .map((c) => {
+              const evento = normalizarTextoKey(c.nombre);
+              const fecha = normalizarTextoKey(c.fecha);
+              return `${evento}|${fecha}`;
+            })
+            .sort()
+        )
+      )
       .digest('hex');
 
     if (hashExistente === hashNuevo) return false;
 
-    await prisma.procesoCronogramaSecop.deleteMany({ where: { procesoId } });
-
-    await prisma.procesoCronogramaSecop.createMany({
-      data: cronogramas.map((cr, i) => ({
-        procesoId,
-        evento: cr.nombre || `Etapa ${i + 1}`,
-        valorTexto: cr.fecha || null,
-        orden: i,
-      })),
+    await prisma.procesoCronogramaSecop.deleteMany({
+      where: { procesoId },
     });
 
-    console.log('[sync] cronograma actualizado', codigoProceso);
+    if (cronogramasNormalizados.length > 0) {
+      await prisma.procesoCronogramaSecop.createMany({
+        data: cronogramasNormalizados.map((cr, i) => ({
+          procesoId,
+          evento: cr.nombre || `Etapa ${i + 1}`,
+          valorTexto: cr.fecha || null,
+          orden: i,
+        })),
+      });
+    }
+
+    console.log('[sync] cronograma actualizado', codigoProceso, {
+      recibidos: cronogramas.length,
+      guardados: cronogramasNormalizados.length,
+    });
 
     return true;
   } catch (err) {
@@ -312,6 +478,7 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
     nombre: p.nombre ?? null,
     entidad,
     objeto: p.objeto ?? null,
+    duracion: p.duracion ?? null,
     fuente: p.fuente ?? null,
     aliasFuente,
     modalidad: p.modalidad ?? null,
@@ -329,8 +496,17 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
     lastSyncedAt: new Date(),
   };
 
+  const documentosNormalizados = deduplicarDocumentos(p.documentos);
+  const cronogramasNormalizados = deduplicarCronogramas(p.cronogramas);
+
   if (!existing) {
-    const creado = await prisma.proceso.create({ data: dataBase });
+    const creado = await prisma.proceso.create({
+      data: {
+        ...dataBase,
+        totalDocumentos: documentosNormalizados.length,
+        totalCronogramas: cronogramasNormalizados.length,
+      },
+    });
 
     metrics.creados++;
 
@@ -344,6 +520,7 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
           nombre: dataBase.nombre,
           entidad: dataBase.entidad,
           objeto: dataBase.objeto,
+          duracion: dataBase.duracion,
           fuente: dataBase.fuente,
           aliasFuente: dataBase.aliasFuente,
           modalidad: dataBase.modalidad,
@@ -364,6 +541,7 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
           nombre: dataBase.nombre,
           entidad: dataBase.entidad,
           objeto: dataBase.objeto,
+          duracion: dataBase.duracion,
           fuente: dataBase.fuente,
           aliasFuente: dataBase.aliasFuente,
           modalidad: dataBase.modalidad,
@@ -411,14 +589,14 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
       entidad,
       perfil,
       sourceKey,
-      p.documentos
+      documentosNormalizados
     );
 
     metrics.documentosNuevos += docsNuevos;
 
-    if (p.cronogramas.length > 0) {
+    if (cronogramasNormalizados.length > 0) {
       await prisma.procesoCronogramaSecop.createMany({
-        data: p.cronogramas.map((cr, i) => ({
+        data: cronogramasNormalizados.map((cr, i) => ({
           procesoId: creado.id,
           evento: cr.nombre || `Etapa ${i + 1}`,
           valorTexto: cr.fecha || null,
@@ -427,13 +605,7 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
       });
     }
 
-    await prisma.proceso.update({
-      where: { id: creado.id },
-      data: {
-        totalDocumentos: docsNuevos,
-        totalCronogramas: p.cronogramas.length,
-      },
-    });
+    await recalcularTotalesProceso(creado.id);
 
     return;
   }
@@ -481,7 +653,11 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
           procesoId: existing.id,
           entidad,
           perfil,
-          datos: { sourceKey, estadoAnterior, estadoNuevo },
+          datos: {
+            sourceKey,
+            estadoAnterior,
+            estadoNuevo,
+          },
         },
       });
     }
@@ -503,7 +679,11 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
           procesoId: existing.id,
           entidad,
           perfil,
-          datos: { sourceKey, fechaAnterior, fechaNueva },
+          datos: {
+            sourceKey,
+            fechaAnterior,
+            fechaNueva,
+          },
         },
       });
     }
@@ -525,7 +705,11 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
           procesoId: existing.id,
           entidad,
           perfil,
-          datos: { sourceKey, valorAnterior, valorNuevo },
+          datos: {
+            sourceKey,
+            valorAnterior,
+            valorNuevo,
+          },
         },
       });
     }
@@ -536,7 +720,7 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
       entidad,
       perfil,
       sourceKey,
-      p.documentos
+      documentosNormalizados
     );
 
     metrics.documentosNuevos += docsNuevos;
@@ -544,7 +728,7 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
     const cronoCambio = await sincronizarCronograma(
       existing.id,
       codigoProceso,
-      p.cronogramas
+      cronogramasNormalizados
     );
 
     if (cronoCambio) {
@@ -559,26 +743,14 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
           procesoId: existing.id,
           entidad,
           perfil,
-          datos: { sourceKey },
+          datos: {
+            sourceKey,
+          },
         },
       });
     }
 
-    const totalDocs = await prisma.procesoDocumentoSecop.count({
-      where: { procesoId: existing.id },
-    });
-
-    const totalCron = await prisma.procesoCronogramaSecop.count({
-      where: { procesoId: existing.id },
-    });
-
-    await prisma.proceso.update({
-      where: { id: existing.id },
-      data: {
-        totalDocumentos: totalDocs,
-        totalCronogramas: totalCron,
-      },
-    });
+    await recalcularTotalesProceso(existing.id);
 
     return;
   }
@@ -589,6 +761,27 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
   const debeCorregirCodigo = Boolean(
     codigoNormalizado && codigoExistente !== codigoNormalizado
   );
+
+  const docsNuevos = await sincronizarDocumentos(
+    existing.id,
+    codigoProceso,
+    entidad,
+    perfil,
+    sourceKey,
+    documentosNormalizados
+  );
+
+  metrics.documentosNuevos += docsNuevos;
+
+  const cronoCambio = await sincronizarCronograma(
+    existing.id,
+    codigoProceso,
+    cronogramasNormalizados
+  );
+
+  if (cronoCambio) {
+    metrics.cronogramasActualizados++;
+  }
 
   await prisma.proceso.update({
     where: { id: existing.id },
@@ -602,7 +795,9 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
     await prisma.procesoNuevo
       .updateMany({
         where: { sourceKey },
-        data: { codigoProceso: codigoNormalizado },
+        data: {
+          codigoProceso: codigoNormalizado,
+        },
       })
       .catch((err: unknown) => {
         console.warn(
@@ -620,6 +815,15 @@ async function upsertProceso(raw: LiciProcesoRaw, metrics: SyncMetrics): Promise
       nuevo: codigoNormalizado,
     });
 
+    await recalcularTotalesProceso(existing.id);
+
+    return;
+  }
+
+  await recalcularTotalesProceso(existing.id);
+
+  if (docsNuevos > 0 || cronoCambio) {
+    metrics.actualizados++;
     return;
   }
 
