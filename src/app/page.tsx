@@ -3856,7 +3856,13 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
   const [error,setError]=React.useState('');
   const [tabActiva,setTabActiva]=React.useState<'resumen'|'requisitos'|'cronograma'|'documentacion'|'adendas'>('resumen');
   const [docVista,setDocVista]=React.useState<'grid'|'list'>('list');
-  const [adendas,setAdendas]=React.useState<Array<{id:number;nombre:string;urlDocumento:string|null;fechaDetectado:string}>>([]);
+  const [adendas,setAdendas]=React.useState<Array<{
+  id:number;
+  nombre:string;
+  urlDocumento:string|null;
+  tipoDocumento?:string|null;
+  fechaDetectado:string;
+}>>([]);
   const [cargandoAdendas,setCargandoAdendas]=React.useState(false);
   const [modoReasignar,setModoReasignar]=React.useState(false);
 
@@ -3939,26 +3945,33 @@ function VistFicha({sol,sesion,variante,onVolver,onGuardado}:{sol:Solicitud;sesi
   }, [variante]);
 
   React.useEffect(()=>{
-    if(!solActual.procesoId)return;
-    setCargandoAdendas(true);
-    fetch(`/api/procesos/${solActual.procesoId}/documentos`)
-      .then(r=>r.json())
-      .then(data=>{
-        if(data.ok&&Array.isArray(data.documentos)){
-          const urlsIniciales=new Set(docArr.map((d: DocumentoDinamico) =>String(d.ruta||d.url||d.link||'').toLowerCase()).filter(Boolean));
-          const nombresIniciales=new Set(docArr.map((d: DocumentoDinamico) =>String(d.nombre||d.titulo||'').toLowerCase()).filter(Boolean));
-          const nuevos=data.documentos.filter((d: DocumentoDinamico) =>{
-            const url=String(d.urlDocumento||'').toLowerCase().trim();
-            const nombre=String(d.nombre||'').toLowerCase().trim();
-            return!(url&&urlsIniciales.has(url))&&!(nombre&&nombresIniciales.has(nombre));
-          });
-          setAdendas(nuevos);
-        }
-      })
-      .catch(()=>{})
-      .finally(()=>setCargandoAdendas(false));
-  },[solActual.procesoId]);
+  const procesoId=Number(solActual.procesoId);
 
+  if(!Number.isInteger(procesoId)||procesoId<=0){
+    setAdendas([]);
+    return;
+  }
+
+  setCargandoAdendas(true);
+
+  fetch(`/api/procesos/${procesoId}/adendas`)
+    .then(r=>r.json())
+    .then(data=>{
+      const lista=Array.isArray(data?.adendas)
+        ? data.adendas
+        : Array.isArray(data?.data)
+          ? data.data
+          : [];
+
+      setAdendas(lista);
+    })
+    .catch(()=>{
+      setAdendas([]);
+    })
+    .finally(()=>{
+      setCargandoAdendas(false);
+    });
+},[solActual.procesoId]);
   const asignar=async()=>{
     if(!responsable){setError('Selecciona un responsable.');return;}
     setAsignando(true);setError('');
@@ -4344,7 +4357,13 @@ function VistFichaBusqueda({sol,sesion,onVolver,onGestionar,puedeGestionar=true}
   const [error,setError]=React.useState('');
   const [tabActiva,setTabActiva]=React.useState<'resumen'|'requisitos'|'cronograma'|'documentacion'|'adendas'>('resumen');
   const [docVista,setDocVista]=React.useState<'grid'|'list'>('list');
-  const [adendas,setAdendas]=React.useState<Array<{id:number;nombre:string;urlDocumento:string|null;fechaDetectado:string}>>([]);
+  const [adendas,setAdendas]=React.useState<Array<{
+  id:number;
+  nombre:string;
+  urlDocumento:string|null;
+  tipoDocumento?:string|null;
+  fechaDetectado:string;
+}>>([]);
   const [cargandoAdendas,setCargandoAdendas]=React.useState(false);
   const [solActual,setSolActual]=React.useState(sol);
   React.useEffect(()=>{
@@ -4364,27 +4383,33 @@ function VistFichaBusqueda({sol,sesion,onVolver,onGestionar,puedeGestionar=true}
   });
 
   React.useEffect(()=>{
-    if(!sol.procesoId)return;
-    setCargandoAdendas(true);
-    fetch(`/api/procesos/${sol.procesoId}/documentos`)
-      .then(r=>r.json())
-      .then(data=>{
-        if(data.ok&&Array.isArray(data.documentos)){
-          const urlsIniciales=new Set(docArr.map((d: DocumentoDinamico) =>String(d.ruta||d.url||d.link||'').toLowerCase()).filter(Boolean));
-          const nombresIniciales=new Set(docArr.map((d: DocumentoDinamico) =>String(d.nombre||d.titulo||'').toLowerCase()).filter(Boolean));
-          const nuevos=data.documentos.filter((d: DocumentoDinamico) =>{
-            const url=String(d.urlDocumento||'').toLowerCase().trim();
-            const nombre=String(d.nombre||'').toLowerCase().trim();
-            const urlMatch=url&&urlsIniciales.has(url);
-            const nombreMatch=nombre&&nombresIniciales.has(nombre);
-            return !urlMatch&&!nombreMatch;
-          });
-          setAdendas(nuevos);
-        }
-      })
-      .catch(()=>{})
-      .finally(()=>setCargandoAdendas(false));
-  },[sol.procesoId]);
+  const procesoId=Number(sol.procesoId);
+
+  if(!Number.isInteger(procesoId)||procesoId<=0){
+    setAdendas([]);
+    return;
+  }
+
+  setCargandoAdendas(true);
+
+  fetch(`/api/procesos/${procesoId}/adendas`)
+    .then(r=>r.json())
+    .then(data=>{
+      const lista=Array.isArray(data?.adendas)
+        ? data.adendas
+        : Array.isArray(data?.data)
+          ? data.data
+          : [];
+
+      setAdendas(lista);
+    })
+    .catch(()=>{
+      setAdendas([]);
+    })
+    .finally(()=>{
+      setCargandoAdendas(false);
+    });
+},[sol.procesoId]);
 
   const urlFuente=sol.linkSecop||sol.linkDetalle||sol.linkSecopReg||'';
   const ebFuente=estadoBadgeColor(sol.estadoFuente||'');
@@ -6040,7 +6065,13 @@ function GestionAsignacionInline({
 function VistFichaAsignacion({sol,sesion,onVolver,onGuardado}:{sol:Solicitud;sesion:Sesion;onVolver:()=>void;onGuardado:(u:Solicitud)=>void;}){
   const [tabActiva,setTabActiva]=React.useState<'resumen'|'requisitos'|'cronograma'|'documentacion'|'adendas'>('resumen');
   const [docVista,setDocVista]=React.useState<'grid'|'list'>('list');
-  const [adendas,setAdendas]=React.useState<Array<{id:number;nombre:string;urlDocumento:string|null;fechaDetectado:string}>>([]);
+  const [adendas,setAdendas]=React.useState<Array<{
+  id:number;
+  nombre:string;
+  urlDocumento:string|null;
+  tipoDocumento?:string|null;
+  fechaDetectado:string;
+}>>([]);
   const [cargandoAdendas,setCargandoAdendas]=React.useState(false);
   const [gestionAsig,setGestionAsig]=React.useState<Record<string,unknown>|null>(null);
 
@@ -6090,22 +6121,33 @@ function VistFichaAsignacion({sol,sesion,onVolver,onGuardado}:{sol:Solicitud;ses
   };
 
   React.useEffect(()=>{
-    if(!sol.procesoId)return;
-    setCargandoAdendas(true);
-    fetch(`/api/procesos/${sol.procesoId}/documentos`)
-      .then(r=>r.json())
-      .then(data=>{
-        if(data.ok&&Array.isArray(data.documentos)){
-          const urlsIni=new Set(docArr.map((d: DocumentoDinamico) =>String(d.ruta||d.url||d.link||'').toLowerCase()).filter(Boolean));
-          const nomIni=new Set(docArr.map((d: DocumentoDinamico) =>String(d.nombre||d.titulo||'').toLowerCase()).filter(Boolean));
-          setAdendas(data.documentos.filter((d: DocumentoDinamico) =>{
-            const url=String(d.urlDocumento||'').toLowerCase().trim();
-            const nom=String(d.nombre||'').toLowerCase().trim();
-            return!(url&&urlsIni.has(url))&&!(nom&&nomIni.has(nom));
-          }));
-        }
-      }).catch(()=>{}).finally(()=>setCargandoAdendas(false));
-  },[sol.procesoId]);
+  const procesoId=Number(sol.procesoId);
+
+  if(!Number.isInteger(procesoId)||procesoId<=0){
+    setAdendas([]);
+    return;
+  }
+
+  setCargandoAdendas(true);
+
+  fetch(`/api/procesos/${procesoId}/adendas`)
+    .then(r=>r.json())
+    .then(data=>{
+      const lista=Array.isArray(data?.adendas)
+        ? data.adendas
+        : Array.isArray(data?.data)
+          ? data.data
+          : [];
+
+      setAdendas(lista);
+    })
+    .catch(()=>{
+      setAdendas([]);
+    })
+    .finally(()=>{
+      setCargandoAdendas(false);
+    });
+},[sol.procesoId]);
 
   const estadoAsigColor=(e:string)=>{
     const s=e.toLowerCase();
