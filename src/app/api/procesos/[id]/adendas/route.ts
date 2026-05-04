@@ -16,17 +16,13 @@ export async function GET(
       );
     }
 
-    const documentos = await prisma.procesoDocumentoSecop.findMany({
+    const adendas = await prisma.procesoDocumentoSecop.findMany({
       where: {
         procesoId: dbId,
-        OR: [
-          { tipoDocumento: null },
-          { tipoDocumento: '' },
-          { tipoDocumento: 'base' },
-        ],
+        tipoDocumento: 'adenda',
       },
       orderBy: {
-        fechaDetectado: 'asc',
+        fechaDetectado: 'desc',
       },
       select: {
         id: true,
@@ -39,15 +35,16 @@ export async function GET(
 
     return NextResponse.json({
       ok: true,
-      documentos,
+      adendas,
+      data: adendas,
     });
   } catch (error) {
-    console.error('[GET /api/procesos/[id]/documentos]', error);
+    console.error('[GET /api/procesos/[id]/adendas]', error);
 
     return NextResponse.json(
       {
         ok: false,
-        error: error instanceof Error ? error.message : 'Error consultando documentos.',
+        error: error instanceof Error ? error.message : 'Error consultando adendas.',
       },
       { status: 500 }
     );

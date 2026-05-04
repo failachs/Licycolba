@@ -213,6 +213,31 @@ function normalizarUrl(value: unknown): string {
 }
 
 /**
+ * Clasifica automáticamente documentos que por nombre corresponden a adendas.
+ * Aplica tanto para documentos iniciales como para documentos nuevos detectados.
+ */
+function detectarTipoDocumentoPorNombre(
+  nombre: string,
+  tipoDocumentoDefault: TipoDocumentoSync
+): TipoDocumentoSync {
+  const texto = normalizarTextoKey(nombre);
+
+  const palabrasAdenda = [
+    'adenda',
+    'adendo',
+    'modificacion',
+    'modificatorio',
+    'alcance',
+  ];
+
+  if (palabrasAdenda.some((palabra) => texto.includes(palabra))) {
+    return 'adenda';
+  }
+
+  return tipoDocumentoDefault;
+}
+
+/**
  * Deduplica documentos antes de comparar o insertar.
  * La clave prioriza URL; si no existe URL, usa el nombre.
  */
@@ -339,13 +364,18 @@ async function sincronizarDocumentos(
 
     if (keysExistentes.has(key)) continue;
 
+    const tipoDocumentoFinal = detectarTipoDocumentoPorNombre(
+      nombre,
+      tipoDocumentoNuevo
+    );
+
     try {
       const nuevo = await prisma.procesoDocumentoSecop.create({
         data: {
           procesoId,
           nombre: nombre || 'Sin nombre',
           urlDocumento: url || null,
-          tipoDocumento: tipoDocumentoNuevo,
+          tipoDocumento: tipoDocumentoFinal,
           fechaDetectado: new Date(),
         },
       });
@@ -353,14 +383,14 @@ async function sincronizarDocumentos(
       keysExistentes.add(key);
       nuevos++;
 
-      if (tipoDocumentoNuevo === 'adenda') {
+      if (tipoDocumentoFinal === 'adenda') {
         console.log('[sync] adenda detectada', codigoProceso, nombre);
 
         await prisma.notificacion.create({
           data: {
             tipo: 'documento_nuevo',
             titulo: 'Nueva adenda detectada',
-            descripcion: `Se detectó un nuevo documento/adenda en el proceso ${codigoProceso ?? '—'}: ${nombre}.`,
+            descripcion: `Se detectó un documento/adenda en el proceso ${codigoProceso ?? '—'}: ${nombre}.`,
             codigoProceso,
             procesoId,
             entidad,
@@ -370,7 +400,7 @@ async function sincronizarDocumentos(
               documentoId: nuevo.id,
               nombreDocumento: nombre,
               urlDocumento: url || null,
-              tipoDocumento: 'adenda',
+              tipoDocumento: tipoDocumentoFinal,
             },
           },
         });
