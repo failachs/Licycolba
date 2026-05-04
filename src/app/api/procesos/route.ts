@@ -194,6 +194,7 @@ export async function GET(req: NextRequest) {
         cronogramas, documentos,
         _dbId:            row.id,
         lastSyncedAt:     row.lastSyncedAt     ?? null,
+        duracionContrato: raw['duracion_contrato'] ?? raw['duracionContrato'] ?? raw['Duracion_Contrato'] ?? null,
       };
     });
 
