@@ -578,7 +578,7 @@ function ModalNuevoUsuario({onClose,onCreado}:{onClose:()=>void;onCreado:()=>voi
 
   return(
     <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
-      <div className="modal-card" style={{maxWidth:680,maxHeight:'88vh',overflowY:'auto' as const}}>
+      <div className="modal-card" style={{maxWidth:720,maxHeight:'92vh',display:'flex',flexDirection:'column' as const}}>
         <div className="modal-header">
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <IcoUsuarios/>
@@ -587,7 +587,7 @@ function ModalNuevoUsuario({onClose,onCreado}:{onClose:()=>void;onCreado:()=>voi
           <button className="modal-close-btn" onClick={onClose}><IcoClose/></button>
         </div>
         {error&&<div className="modal-error">{error}</div>}
-        <div className="modal-body">
+        <div className="modal-body" style={{overflowY:'auto',flex:1,padding:'20px 28px'}}>
 
           {/* Fila 1: Nombre de usuario | Cédula */}
           <div className="form-row">
@@ -745,7 +745,7 @@ function ModalEditarUsuario({usuario:u,onClose,onGuardado}:{usuario:User;onClose
 
   return(
     <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
-        <div className="modal-card" style={{maxWidth:680,maxHeight:'88vh',overflowY:'auto' as const}}>        <div className="modal-header">
+        <div className="modal-card" style={{maxWidth:720,maxHeight:'92vh',display:'flex',flexDirection:'column' as const}}>        <div className="modal-header">
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <IcoPencil/>
             <h3 style={{margin:0,fontSize:15,fontWeight:600,color:'#111827'}}>Editar usuario</h3>
@@ -753,7 +753,7 @@ function ModalEditarUsuario({usuario:u,onClose,onGuardado}:{usuario:User;onClose
           <button className="modal-close-btn" onClick={onClose}><IcoClose/></button>
         </div>
         {error&&<div className="modal-error">{error}</div>}
-        <div className="modal-body">
+        <div className="modal-body" style={{overflowY:'auto' as const,flex:1,padding:'20px 24px'}}>
 
           {/* Fila 1: Nombre de usuario | Cédula */}
           <div className="form-row">
